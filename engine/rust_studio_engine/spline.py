@@ -96,6 +96,51 @@ def sample_catmull_rom(
     return out
 
 
+def sample_bezier(
+    control_points: Sequence[Point3],
+    samples_per_segment: int = 12,
+    closed: bool = False,
+) -> list[Point3]:
+    """Sample a C1 cubic Bezier chain with automatically derived handles.
+
+    Editors expect a smooth curve without asking mappers to place two extra
+    handle objects per node. Handles are one sixth of the neighbouring chord,
+    which is the standard Catmull-Rom to Bezier conversion.
+    """
+    points = [tuple(map(float, point)) for point in control_points]
+    if len(points) < 2:
+        return points
+    count = len(points)
+
+    def at(index: int) -> Point3:
+        if closed:
+            return points[index % count]
+        return points[max(0, min(count - 1, index))]
+
+    segments = count if closed else count - 1
+    out: list[Point3] = []
+    for segment in range(segments):
+        p0, p1, p2, p3 = at(segment - 1), at(segment), at(segment + 1), at(segment + 2)
+        c1 = tuple(p1[i] + (p2[i] - p0[i]) / 6.0 for i in range(3))
+        c2 = tuple(p2[i] - (p3[i] - p1[i]) / 6.0 for i in range(3))
+        steps = samples_per_segment if segment < segments - 1 else samples_per_segment + 1
+        for step in range(steps):
+            t = step / samples_per_segment
+            u = 1.0 - t
+            out.append(
+                tuple(
+                    p1[i] * (u**3)
+                    + c1[i] * (3 * u * u * t)
+                    + c2[i] * (3 * u * t * t)
+                    + p2[i] * (t**3)
+                    for i in range(3)
+                )  # type: ignore[arg-type]
+            )
+    if closed and out:
+        out.pop()
+    return out
+
+
 def resample_by_spacing(points: Sequence[Point3], spacing: float) -> list[Point3]:
     """Resample a polyline to roughly uniform arc-length spacing."""
     if len(points) < 2 or spacing <= 0:
@@ -240,6 +285,7 @@ __all__ = [
     "conform_to_terrain",
     "polyline_length",
     "resample_by_spacing",
+    "sample_bezier",
     "sample_catmull_rom",
     "smooth_path",
     "terrain_hugging_ribbon",

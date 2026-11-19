@@ -193,7 +193,8 @@ monuments and mesh packs travel with the project.
 - Custom commands are the only privileged surface; no arbitrary shell plugin is exposed to the UI.
 - The optional FastAPI sidecar defaults to loopback, prints a per-run token, and rejects requests
   without `X-Studio-Token` when `STUDIO_SIDECAR_TOKEN` is set.
-- Sync credentials live in the OS keyring; the database stores only `token_ref`.
+- Sync credentials live in `data/sync/token` with mode `0600`; the database stores only the
+  `token_ref` path. The token is passed to the Python HTTP client by file, never by argv.
 - Export never writes the map password into the map. `mapLock` is recorded as metadata; the
   password stays in project storage.
 

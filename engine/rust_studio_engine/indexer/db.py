@@ -61,9 +61,22 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
         connection.executescript(script)
     except sqlite3.Error as exc:
         raise DatabaseError(f"failed to apply {path}: {exc}") from exc
+    _ensure_column(
+        connection, "bundles", "manifest_prefab_count", "INTEGER NOT NULL DEFAULT -1"
+    )
     current = connection.execute("PRAGMA user_version").fetchone()[0]
     if current < SCHEMA_VERSION:
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _ensure_column(
+    connection: sqlite3.Connection, table: str, column: str, definition: str
+) -> None:
+    """Add a column to an existing database (``CREATE TABLE IF NOT EXISTS``
+    never alters a table that is already present)."""
+    columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def get_setting(connection: sqlite3.Connection, key: str, default: str | None = None) -> str | None:

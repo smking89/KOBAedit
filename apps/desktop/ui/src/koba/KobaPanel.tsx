@@ -1,11 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge, Button } from "../components/ui";
-import { demoMode, exportProject } from "../lib/ipc";
+import { demoMode, exportProject, listBaseMeshes, listPrefabs } from "../lib/ipc";
 import { useWizard } from "../wizard/context";
 import { readAttachment, revokeAttachment } from "./attachments";
+import { refreshProjectThumbnail } from "../utils/thumbnailQueue";
 import { generateProject } from "./generate";
 import type { KobaAttachment, KobaMessage } from "./types";
+import type { PrefabAsset, WizardDraft } from "../wizard/types";
+
+/** Stages of a live prompt build: terrain → surfaces → monuments → roads. */
+function buildStages(draft: WizardDraft): { label: string; draft: WizardDraft }[] {
+  if (draft.branch !== "world") return [{ label: "Draft", draft }];
+  const bareTerrain = {
+    ...draft.terrain,
+    strokes: [],
+    layers: draft.terrain.layers.map((layer) => ({ ...layer, strokes: [] })),
+  };
+  return [
+    { label: "Terrain", draft: { ...draft, placements: [], splines: [], terrain: bareTerrain } },
+    { label: "Surfaces", draft: { ...draft, placements: [], splines: [] } },
+    { label: "Monuments", draft: { ...draft, splines: [] } },
+    { label: "Roads", draft },
+  ];
+}
 
 const SUGGESTIONS = [
   "Snowy 4 km island map with 8 monuments and two roads",
@@ -14,6 +32,16 @@ const SUGGESTIONS = [
 ];
 
 const MAX_ATTACHMENTS = 6;
+
+const COMMAND_SUGGESTIONS = [
+  "generate 4.5k island with snow mountain north and river through center",
+  "paint cliff topology on slopes > 35",
+  "place 4 bandit vending machines along road_01",
+  "wire green card reader to door_01",
+  "enter walk mode",
+  "lock map with password local-secret",
+  "set wear 0.35",
+];
 
 function uid(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -38,8 +66,31 @@ const WELCOME: KobaMessage = {
   ],
 };
 
-export function KobaPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { state, dispatch } = useWizard();
+export function KobaPanel({
+  open,
+  onClose,
+  onStageFocus,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Camera framing hook for each live-build stage (App owns the viewport). */
+  onStageFocus?: (draft: WizardDraft, stage: number) => void;
+}) {
+  const {
+    state,
+    dispatch,
+    undo,
+    canUndo,
+    beginStagedBuild,
+    applyStagedDraft,
+    finishStagedBuild,
+    cancelStagedBuild,
+  } = useWizard();
+  const [building, setBuilding] = useState<{
+    steps: { label: string; status: "pending" | "running" | "done" }[];
+    paused: boolean;
+  } | null>(null);
+  const buildRun = useRef<{ cancelled: boolean; paused: boolean } | null>(null);
   const [messages, setMessages] = useState<KobaMessage[]>([WELCOME]);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<KobaAttachment[]>([]);
@@ -47,10 +98,30 @@ export function KobaPanel({ open, onClose }: { open: boolean; onClose: () => voi
   const [adding, setAdding] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [autoExport, setAutoExport] = useState(true);
+  const [catalog, setCatalog] = useState<PrefabAsset[]>([]);
+  const [meshNames, setMeshNames] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const preview = useMemo(() => demoMode(), []);
+  const autocomplete = useMemo(() => {
+    const needle = prompt.trim().toLowerCase();
+    if (needle.length < 2) return [];
+    const tokens = needle
+      .split(/\s+/)
+      .filter((token) => token.length > 1 && !/^\d+$/.test(token));
+    if (!tokens.length) return [];
+    return [
+      ...COMMAND_SUGGESTIONS,
+      ...catalog.slice(0, 400).map((prefab) => `place ${prefab.name} on road_01`),
+      ...meshNames.slice(0, 80).map((name) => `apply matte black finish on ${name}`),
+    ]
+      .filter((suggestion) => {
+        const lower = suggestion.toLowerCase();
+        return tokens.every((token) => lower.includes(token));
+      })
+      .slice(0, 5);
+  }, [prompt, catalog, meshNames]);
 
   const append = (message: Omit<KobaMessage, "id">) => {
     setMessages((current) => [...current, { ...message, id: uid() }]);
@@ -68,6 +139,21 @@ export function KobaPanel({ open, onClose }: { open: boolean; onClose: () => voi
       window.removeEventListener("keydown", onKey);
     };
   }, [open, onClose]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void Promise.all([listPrefabs(), listBaseMeshes()])
+      .then(([prefabs, meshes]) => {
+        if (cancelled) return;
+        setCatalog(prefabs);
+        setMeshNames(meshes.map((mesh) => mesh.name));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -111,9 +197,36 @@ export function KobaPanel({ open, onClose }: { open: boolean; onClose: () => voi
     setAttachments((current) => current.filter((item) => item.id !== attachment.id));
   };
 
-  const send = async () => {
+  const toggleBuildPause = () => {
+    const run = buildRun.current;
+    if (!run) return;
+    run.paused = !run.paused;
+    setBuilding((current) => (current ? { ...current, paused: run.paused } : current));
+  };
+
+  const stopBuild = () => {
+    if (buildRun.current) buildRun.current.cancelled = true;
+  };
+
+  /** Sleeps between stages, honouring pause and stop. */
+  const waitStage = async (milliseconds: number): Promise<boolean> => {
+    let remaining = milliseconds;
+    while (remaining > 0) {
+      const run = buildRun.current;
+      if (!run || run.cancelled) return false;
+      if (run.paused) {
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+        continue;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 60));
+      remaining -= 60;
+    }
+    return !buildRun.current?.cancelled;
+  };
+
+  const send = async (override?: string) => {
     if (busy || adding) return;
-    const text = prompt.trim();
+    const text = (override ?? prompt).trim();
     if (!text && attachments.length === 0) return;
     const sentAttachments = attachments;
     const names = sentAttachments.map((attachment) => attachment.name);
@@ -128,8 +241,59 @@ export function KobaPanel({ open, onClose }: { open: boolean; onClose: () => voi
     await new Promise((resolve) => window.setTimeout(resolve, 180));
 
     try {
-      const result = generateProject(text || "Build from the attached files.", sentAttachments, state.draft);
-      dispatch({ type: "applyGenerated", draft: result.draft, step: result.step });
+      const result = generateProject(
+        text || "Build from the attached files.",
+        sentAttachments,
+        state.draft,
+        catalog,
+      );
+      // Live build: animate each stage, then commit one undoable draft.
+      const stages = buildStages(result.draft);
+      beginStagedBuild();
+      buildRun.current = { cancelled: false, paused: false };
+      setBuilding({
+        steps: stages.map((stage, index) => ({
+          label: stage.label,
+          status: index === 0 ? "running" : "pending",
+        })),
+        paused: false,
+      });
+      let cancelled = false;
+      for (let stage = 0; stage < stages.length; stage += 1) {
+        setBuilding((current) =>
+          current
+            ? {
+                ...current,
+                steps: current.steps.map((step, index) => ({
+                  ...step,
+                  status: index < stage ? "done" : index === stage ? "running" : "pending",
+                })),
+              }
+            : current,
+        );
+        applyStagedDraft(stages[stage].draft, result.step);
+        onStageFocus?.(stages[stage].draft, stage);
+        const proceed = await waitStage(stage === 0 ? 320 : 480);
+        if (!proceed) {
+          cancelled = true;
+          break;
+        }
+      }
+      buildRun.current = null;
+      setBuilding(null);
+      if (cancelled) {
+        cancelStagedBuild();
+        append({
+          role: "assistant",
+          text: "Build stopped. The project is back to how it was before this prompt.",
+        });
+        setBusy(false);
+        return;
+      }
+      finishStagedBuild(result.draft, result.step);
+      void refreshProjectThumbnail(result.draft).catch(() => {
+        // Cards still fall back to proxy art when the real GLB cache is empty.
+      });
 
       let exportPath: string | undefined;
       let exportBytes: number | undefined;
@@ -155,9 +319,11 @@ export function KobaPanel({ open, onClose }: { open: boolean; onClose: () => voi
               : "The draft is ready; export is manual."
         }`,
         lines: result.summary,
+        chips: result.chips,
         exportPath,
         exportBytes,
         error: Boolean(exportError),
+        undo: true,
       });
       if (exportError) {
         append({
@@ -247,9 +413,53 @@ export function KobaPanel({ open, onClose }: { open: boolean; onClose: () => voi
                     )}
                   </div>
                 )}
+                {message.undo && canUndo && (
+                  <div className="koba-chips">
+                    <button type="button" onClick={undo}>
+                      Undo build
+                    </button>
+                  </div>
+                )}
+                {message.chips && message.chips.length > 0 && (
+                  <div className="koba-chips">
+                    {message.chips.map((chip, index) => (
+                      <button
+                        key={`${chip.label}-${index}`}
+                        type="button"
+                        onClick={() => void send(chip.prompt)}
+                      >
+                        {chip.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ))}
+          {building && (
+            <div className="koba-build" aria-live="polite">
+              <header>
+                <span className={`koba-build-pill${building.paused ? " is-paused" : ""}`}>
+                  {building.paused ? "Paused" : "Building live"}
+                </span>
+                <button type="button" onClick={toggleBuildPause}>
+                  {building.paused ? "Resume" : "Pause"}
+                </button>
+                <button type="button" onClick={stopBuild}>
+                  Stop
+                </button>
+              </header>
+              <ol>
+                {building.steps.map((step) => (
+                  <li key={step.label} className={`is-${step.status}`}>
+                    <span className="koba-build-dot" aria-hidden="true" />
+                    {step.label}
+                    <em>{step.status === "done" ? "Done" : step.status === "running" ? "Running" : "Queued"}</em>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
           {busy && (
             <div className="koba-working" aria-live="polite">
               <span className="koba-spinner" aria-hidden="true" />
@@ -352,6 +562,24 @@ export function KobaPanel({ open, onClose }: { open: boolean; onClose: () => voi
               }
             }}
           />
+
+          {autocomplete.length > 0 && (
+            <div className="koba-autocomplete" role="listbox" aria-label="Command suggestions">
+              {autocomplete.map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    type="button"
+                    role="option"
+                    onClick={() => {
+                      setPrompt(suggestion);
+                      textRef.current?.focus();
+                    }}
+                  >
+                    {suggestion}
+                  </button>
+              ))}
+            </div>
+          )}
 
           <div className="koba-actions">
             <label className="koba-auto">

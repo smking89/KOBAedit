@@ -163,6 +163,9 @@ CREATE TABLE IF NOT EXISTS bundles (
     node_count          INTEGER NOT NULL DEFAULT 0,
     container_count     INTEGER NOT NULL DEFAULT 0,
     object_counts_json  TEXT NOT NULL DEFAULT '{}',
+    -- Prefab paths imported from the GameManifest. -1 means the bundle has not
+    -- been inspected for one yet, so the cache cannot skip it.
+    manifest_prefab_count INTEGER NOT NULL DEFAULT -1,
     indexed_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (pack_id, path)
 );

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import struct
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 
 from rust_studio_engine.indexer import bundles as bundle_module
 from rust_studio_engine.indexer.bundles import BundleIngestor, classify_asset_path, classify_object
+from rust_studio_engine.indexer.bundles import _is_skin_mesh
 from rust_studio_engine.indexer.db import connect, database_stats
 from rust_studio_engine.indexer.indexer import prefab_name_from_path
 from rust_studio_engine.indexer.unity_bundle import (
@@ -85,6 +87,9 @@ def test_prefab_and_container_classification() -> None:
     assert classify_object("GameObject", "assets/x/item.prefab") == "prefab"
     assert classify_object("Mesh", None) == "mesh"
     assert classify_object("MonoBehaviour", "assets/x/skin.asset") == "data"
+    assert _is_skin_mesh("ak47_combined_static", "assets/prefabs/weapons/ak47u/model/ak47.fbx")
+    assert _is_skin_mesh("hoodie", "assets/content/attire/hoodie/hoodie.fbx")
+    assert not _is_skin_mesh("pine", "assets/content/nature/pine/pine.fbx")
 
 
 def test_schema_tracks_bundles() -> None:
@@ -114,6 +119,36 @@ class FakeObject:
 class FakeEnvironment:
     def __init__(self, objects: list[FakeObject]) -> None:
         self.objects = objects
+
+
+def test_manifest_prefabs_are_indexed_with_monument_category(tmp_path) -> None:
+    from rust_studio_engine.indexer.indexer import AssetIndexer
+
+    indexer = AssetIndexer(tmp_path / "index.db")
+    try:
+        pack_id = indexer.register_pack("test", tmp_path)
+        path = "assets/bundled/prefabs/autospawn/monument/trainyard/trainyard.prefab"
+        assert indexer.index_bundle_prefab(
+            pack_id, path, bundle_name="content.bundle", source="game-manifest"
+        )
+        row = indexer.connection.execute(
+            "SELECT name, category, modifiers_json FROM prefabs WHERE asset_path = ?",
+            (path,),
+        ).fetchone()
+        assert row["name"] == "trainyard"
+        assert row["category"] == "Monument"
+        metadata = json.loads(row["modifiers_json"])
+        assert metadata["source"] == "game-manifest"
+        assert metadata["bundle"] == "content.bundle"
+    finally:
+        indexer.close()
+
+
+def test_bundle_rows_track_manifest_scans() -> None:
+    connection = connect(":memory:")
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(bundles)")}
+    assert "manifest_prefab_count" in columns
+    connection.close()
 
 
 def test_bundle_ingest_imports_prefab_paths(tmp_path, monkeypatch) -> None:

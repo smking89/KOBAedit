@@ -10,6 +10,9 @@ Only fields the engine needs are read; unknown fields are ignored.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+from array import array
 import json
 import math
 import random
@@ -22,22 +25,42 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFilter
 
 from .indexer.indexer import infer_prefab_category, prefab_id_from_path
+from .map_lock import LOCK_LAYER, create_map_lock
 from .procedural import TerrainSettings, apply_to_document
 from .texture import export_channels, normal_map_from_height
 from .world.map_file import (
     STUDIO_META_LAYER,
     build_document,
+    expected_layer_sizes,
     validate_layout,
     write_document,
 )
-from .world.models import PathInstance, PathNode, PrefabInstance, Vector3, WorldDocument
+from .world.models import (
+    PathInstance,
+    PathNode,
+    PrefabInstance,
+    Vector3,
+    WorldDocument,
+    height_metres_to_raw,
+    height_raw_to_metres,
+)
 from .world.terrain import (
     HeightField,
+    EDITOR_TOPOLOGY_FLAGS,
+    SPLAT_CHANNELS,
+    biome_planes,
     decode_i32,
+    decode_u16,
     encode_i32,
+    encode_u16,
     mark_topology_region,
+    paint_biome,
+    paint_splat,
+    set_alpha_region,
     set_water_level,
     splat_planes,
+    store_biome,
+    store_splat,
 )
 
 SPLINE_PREFIXES = {
@@ -46,6 +69,7 @@ SPLINE_PREFIXES = {
     "rail": "Rail",
     "apc": "APC",
     "cargo": "Cargo",
+    "chinook": "Chinook",
     "powerline": "Powerline",
 }
 
@@ -114,14 +138,24 @@ def _export_world(
     settings = TerrainSettings.from_dict(draft.get("terrain") or {})
     document = apply_to_document(settings)
     placements = draft.get("placements") or []
+    terrain = draft.get("terrain") or {}
 
+    _apply_heightmap_import(document, terrain)
+    # Native imports can change the map size; keep every later pass (pads,
+    # splines, brushes) in the same world-space grid as the height layer.
+    settings.size_metres = int(document.size)
     for placement in placements:
         _add_prefab(document, placement)
 
     if kind != "monument":
         _add_splines(document, draft.get("splines") or [])
+        _apply_spline_corridors(document, settings, draft.get("splines") or [])
+        _apply_cave_portals(document, settings, draft.get("splines") or [])
 
     _apply_monument_pads(document, settings, placements)
+    _apply_mask_imports(document, terrain)
+    _apply_slope_topology(document, settings, terrain)
+    _apply_terrain_strokes(document, settings, terrain)
     set_water_level(document, float(settings.water_level))
 
     meta = {
@@ -132,6 +166,36 @@ def _export_world(
         "seed": settings.seed,
         "preset": settings.preset,
         "loot": draft.get("loot"),
+        "io": draft.get("io") or {},
+        "vendingOverrides": (draft.get("io") or {}).get("vendingOverrides") or [],
+        "placements": [
+            {
+                "id": placement.get("id"),
+                "assetId": placement.get("assetId"),
+                "name": placement.get("name"),
+                "ioWiring": placement.get("ioWiring") or "",
+                "lootTier": placement.get("lootTier"),
+                "lootProfile": placement.get("lootProfile") or "",
+                "npcCount": placement.get("npcCount") or 0,
+                "collisionRadius": placement.get("collisionRadius"),
+                "collisionHeight": placement.get("collisionHeight"),
+            }
+            for placement in placements
+        ],
+        "slopeTopology": terrain.get("slopeTopology") or [],
+        "splines": [
+            {
+                "id": spline.get("id"),
+                "name": spline.get("name"),
+                "kind": spline.get("kind"),
+                "curve": spline.get("curve", "catmull-rom"),
+                "width": spline.get("width"),
+                "ceilingHeight": spline.get("ceilingHeight"),
+                "roughness": spline.get("roughness"),
+                "nodes": spline.get("nodes") or [],
+            }
+            for spline in (draft.get("splines") or [])
+        ],
         "export": {
             "mapLock": bool((draft.get("export") or {}).get("mapLock")),
             # Never write the password itself into the exported map.
@@ -139,12 +203,34 @@ def _export_world(
     }
     document.layers[STUDIO_META_LAYER] = json.dumps(meta).encode("utf-8")
 
+    lock_record: dict[str, Any] | None = None
+    export_settings = draft.get("export") or {}
+    if kind != "monument" and bool(export_settings.get("mapLock")):
+        password = str(export_settings.get("mapPassword") or "")
+        if len(password) < 6:
+            raise ExportError("map lock requires a password of at least 6 characters")
+        lock_record = create_map_lock(
+            password,
+            {
+                "project": draft.get("name"),
+                "file": name,
+                "createdAt": _now(),
+            },
+        )
+        document.layers[LOCK_LAYER] = json.dumps(lock_record).encode("utf-8")
+
     if _strip_editor_data(draft):
         document.layers.pop(STUDIO_META_LAYER, None)
 
     issues = [issue for issue in validate_layout(document) if issue["severity"] == "error"]
     if issues:
         raise ExportError("; ".join(issue["message"] for issue in issues))
+    layer_bytes = sum(len(blob) for blob in document.layers.values())
+    if layer_bytes > MAX_EXPORT_LAYER_BYTES:
+        raise ExportError(
+            f"export layers need {layer_bytes // (1024 * 1024)} MiB, above the "
+            f"{MAX_EXPORT_LAYER_BYTES // (1024 * 1024)} MiB safety limit"
+        )
 
     if kind == "monument":
         prefab_only = WorldDocument(
@@ -165,6 +251,16 @@ def _export_world(
 
     path = target_dir / f"{name}.map"
     write_document(path, document)
+    if lock_record is not None:
+        sidecar = {
+            **lock_record,
+            "map": path.name,
+            "mapSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "mapBytes": path.stat().st_size,
+        }
+        (target_dir / f"{name}.map.lock").write_text(
+            json.dumps(sidecar, indent=2), encoding="utf-8"
+        )
     return ExportResult(kind="map", path=str(path), bytes=path.stat().st_size, createdAt=_now())
 
 
@@ -220,6 +316,446 @@ def _add_splines(document: WorldDocument, splines: list[dict[str, Any]]) -> None
         document.paths.append(path)
 
 
+MAX_NATIVE_RESOLUTION = 4097
+MAX_EXPORT_LAYER_BYTES = 512 * 1024 * 1024
+
+# Pillow 9.1+ exposes the filters under Image.Resampling while keeping the
+# module-level aliases; resolve both so older pinned Pillows still work.
+_RESAMPLING = getattr(Image, "Resampling", Image)
+_MASK_DOWNSAMPLE = _RESAMPLING.BOX
+_MASK_UPSAMPLE = _RESAMPLING.BILINEAR
+
+
+def _resize_byte_planes(
+    data: bytes, channels: int, old_resolution: int, new_resolution: int
+) -> bytes:
+    """Nearest-neighbour resize for splat/biome/topology planes."""
+    if old_resolution == new_resolution:
+        return data
+    out = bytearray(channels * new_resolution * new_resolution)
+    for z in range(new_resolution):
+        sz = min(old_resolution - 1, round(z / max(1, new_resolution - 1) * (old_resolution - 1)))
+        for x in range(new_resolution):
+            sx = min(old_resolution - 1, round(x / max(1, new_resolution - 1) * (old_resolution - 1)))
+            source = (sz * old_resolution + sx) * channels
+            target = (z * new_resolution + x) * channels
+            out[target : target + channels] = data[source : source + channels]
+    return bytes(out)
+
+
+def _resize_document_for_size(document: WorldDocument, new_size: int) -> None:
+    """Resize every terrain layer so the map format stays internally consistent."""
+    old_size = int(document.size)
+    if old_size == new_size:
+        return
+    old_height = HeightField.from_document(document)
+    new_resolution = new_size + 1
+    values = array("H", [0]) * (new_resolution * new_resolution)
+    for z in range(new_resolution):
+        sz = min(old_height.resolution - 1, round(z / max(1, new_resolution - 1) * (old_height.resolution - 1)))
+        for x in range(new_resolution):
+            sx = min(old_height.resolution - 1, round(x / max(1, new_resolution - 1) * (old_height.resolution - 1)))
+            values[z * new_resolution + x] = old_height.values[sz * old_height.resolution + sx]
+    document.size = new_size
+    document.layers["terrain"] = encode_u16(values)
+    document.layers["height"] = encode_u16(values)
+    for name, channels in (("splat", 8), ("biome", 4), ("topology", 4), ("alpha", 1)):
+        blob = document.layers.get(name)
+        if not blob:
+            continue
+        old_resolution = int(round((len(blob) / channels) ** 0.5))
+        target = expected_layer_sizes(new_size)[name][1]
+        target_resolution = int(round(target ** 0.5))
+        document.layers[name] = _resize_byte_planes(
+            blob, channels, old_resolution, target_resolution
+        )
+    water = document.layers.get("water")
+    if water:
+        old_values = decode_u16(water)
+        old_resolution = int(round(len(old_values) ** 0.5))
+        resized = array("H", [0]) * (new_resolution * new_resolution)
+        for z in range(new_resolution):
+            sz = min(old_resolution - 1, round(z / max(1, new_resolution - 1) * (old_resolution - 1)))
+            for x in range(new_resolution):
+                sx = min(old_resolution - 1, round(x / max(1, new_resolution - 1) * (old_resolution - 1)))
+                resized[z * new_resolution + x] = old_values[sz * old_resolution + sx]
+        document.layers["water"] = encode_u16(resized)
+
+
+def _apply_heightmap_import(document: WorldDocument, terrain: dict[str, Any]) -> None:
+    imported = terrain.get("heightmap")
+    if not isinstance(imported, dict):
+        return
+    try:
+        resolution = int(imported.get("resolution") or 0)
+        payload = base64.b64decode(str(imported.get("data") or ""))
+    except (ValueError, TypeError) as exc:
+        raise ExportError(f"heightmap import is corrupt: {exc}") from exc
+    if resolution > MAX_NATIVE_RESOLUTION:
+        raise ExportError(
+            f"heightmap import is {resolution}²; native exports support at most {MAX_NATIVE_RESOLUTION}²"
+        )
+    values = decode_u16(payload)
+    if resolution < 2 or len(values) < resolution * resolution:
+        raise ExportError("heightmap import is not a square 16-bit grid")
+    estimated = 2 * resolution * resolution
+    if estimated > MAX_EXPORT_LAYER_BYTES:
+        raise ExportError(
+            f"heightmap import needs {estimated // (1024 * 1024)} MiB for one layer; "
+            "split the map or use a 2049² source"
+        )
+    scale = float(imported.get("verticalScale") or 1.0)
+
+    if resolution >= 1025:
+        # Preserve the native grid instead of resampling it into the generated
+        # 4501² layer. The map size follows the native resolution so validation
+        # and the layer layout stay consistent.
+        _resize_document_for_size(document, resolution - 1)
+        native = array(
+            "H",
+            (
+                height_metres_to_raw(value / 65535.0 * 1000.0 * scale)
+                for value in values[: resolution * resolution]
+            ),
+        )
+        encoded = encode_u16(native)
+        document.layers["terrain"] = encoded
+        document.layers["height"] = encoded
+        return
+
+    field = HeightField.from_document(document)
+    for iz in range(field.resolution):
+        v = iz / max(1, field.resolution - 1) * (resolution - 1)
+        z0 = min(resolution - 1, int(v))
+        z1 = min(resolution - 1, z0 + 1)
+        tz = v - z0
+        for ix in range(field.resolution):
+            u = ix / max(1, field.resolution - 1) * (resolution - 1)
+            x0 = min(resolution - 1, int(u))
+            x1 = min(resolution - 1, x0 + 1)
+            tx = u - x0
+            top = values[z0 * resolution + x0] * (1 - tx) + values[z0 * resolution + x1] * tx
+            bottom = values[z1 * resolution + x0] * (1 - tx) + values[z1 * resolution + x1] * tx
+            raw = top * (1 - tz) + bottom * tz
+            metres = raw / 65535.0 * 1000.0 * scale
+            field.values[iz * field.resolution + ix] = height_metres_to_raw(metres)
+    field.store(document)
+
+
+def _resample_mask(data: bytes, resolution: int, target_resolution: int) -> bytes:
+    """Map a native mask onto the layer grid without discarding detail.
+
+    Exact grids are copied byte for byte. Larger sources are box-averaged over
+    each target texel's footprint instead of point-sampled, so a 4097² mask
+    keeps its coverage when it lands on a 2048² splat/biome/topology layer.
+    Smaller sources are interpolated so they do not turn into blocky steps.
+    """
+    if resolution == target_resolution:
+        return data[: resolution * resolution]
+    source = bytes(data[: resolution * resolution])
+    image = Image.frombytes("L", (resolution, resolution), source)
+    resample = _MASK_DOWNSAMPLE if resolution > target_resolution else _MASK_UPSAMPLE
+    return image.resize((target_resolution, target_resolution), resample).tobytes()
+
+
+def _apply_mask_imports(document: WorldDocument, terrain: dict[str, Any]) -> None:
+    masks = terrain.get("masks") or []
+    if not masks:
+        return
+    splat = splat_planes(document)
+    biome = biome_planes(document)
+    topology = decode_i32(document.layers["topology"])
+    alpha = bytearray(document.layers["alpha"])
+    splat_resolution = int(round(len(splat[0]) ** 0.5))
+    topology_bits = list(EDITOR_TOPOLOGY_FLAGS.values())
+
+    for mask in masks:
+        try:
+            resolution = int(mask.get("resolution") or 0)
+            data = base64.b64decode(str(mask.get("data") or ""))
+        except (ValueError, TypeError):
+            continue
+        if resolution > MAX_NATIVE_RESOLUTION:
+            raise ExportError(
+                f"mask import is {resolution}²; native exports support at most {MAX_NATIVE_RESOLUTION}²"
+            )
+        if resolution < 2 or len(data) < resolution * resolution:
+            continue
+        kind = str(mask.get("kind") or "splat")
+        channel = max(0, min(7, int(mask.get("channel") or 0)))
+        target_resolution = splat_resolution if kind != "alpha" else int(round(len(alpha) ** 0.5))
+        target = alpha if kind == "alpha" else None
+        # Keep the imported native grid; only the final stamp uses the layer grid.
+        values = _resample_mask(data, resolution, target_resolution)
+        for index, value in enumerate(values):
+            if value <= 0:
+                continue
+            if kind == "splat":
+                plane = splat[channel]
+                plane[index] = min(255, int(plane[index] + (255 - plane[index]) * value / 255))
+            elif kind == "biome":
+                for other in range(4):
+                    value_other = biome[other][index]
+                    biome[other][index] = (
+                        min(255, int(value_other + (255 - value_other) * value / 255))
+                        if other == channel
+                        else int(value_other * (1 - value / 255 * 0.85))
+                    )
+            elif kind == "topology":
+                if index < len(topology) and value > 127:
+                    topology[index] = int(topology[index]) | topology_bits[min(len(topology_bits) - 1, channel)]
+            elif target is not None:
+                target[index] = min(target[index], 255 - value)
+    if any(str(mask.get("kind")) == "splat" for mask in masks):
+        from .world.terrain import normalize_splat
+
+        normalize_splat(splat)
+        store_splat(document, splat)
+    if any(str(mask.get("kind")) == "biome" for mask in masks):
+        store_biome(document, biome)
+    if any(str(mask.get("kind")) == "topology" for mask in masks):
+        document.layers["topology"] = encode_i32(topology)
+    if any(str(mask.get("kind")) == "alpha" for mask in masks):
+        document.layers["alpha"] = bytes(alpha)
+
+
+def _apply_slope_topology(
+    document: WorldDocument, settings: TerrainSettings, terrain: dict[str, Any]
+) -> None:
+    rules = terrain.get("slopeTopology") or []
+    if not rules:
+        return
+    field = HeightField.from_document(document)
+    topology = decode_i32(document.layers["topology"])
+    topology_resolution = int(round(len(topology) ** 0.5))
+    scale = (topology_resolution - 1) / max(1, field.resolution - 1)
+    for z in range(1, field.resolution - 1):
+        for x in range(1, field.resolution - 1):
+            index = z * field.resolution + x
+            left = field.values[index - 1]
+            right = field.values[index + 1]
+            up = field.values[index - field.resolution]
+            down = field.values[index + field.resolution]
+            dx = (height_raw_to_metres(right) - height_raw_to_metres(left)) / (2 * field.texel_size)
+            dz = (height_raw_to_metres(down) - height_raw_to_metres(up)) / (2 * field.texel_size)
+            slope = math.degrees(math.atan(math.hypot(dx, dz)))
+            mask = 0
+            for rule in rules:
+                try:
+                    minimum = float(rule.get("minSlope", 0))
+                    maximum = float(rule.get("maxSlope", 90))
+                except (TypeError, ValueError):
+                    continue
+                if minimum <= slope <= maximum:
+                    for flag in rule.get("flags") or []:
+                        mask |= EDITOR_TOPOLOGY_FLAGS.get(str(flag), 0)
+            if mask:
+                tx = min(topology_resolution - 1, int(round(x * scale)))
+                tz = min(topology_resolution - 1, int(round(z * scale)))
+                topology[tz * topology_resolution + tx] |= mask
+    document.layers["topology"] = encode_i32(topology)
+
+
+def _stroke_plan(terrain: dict[str, Any]) -> list[tuple[dict[str, Any], float]]:
+    """Visible layers in replay order with their opacity.
+
+    Projects saved before layers carry a flat `strokes` history; they replay at
+    full strength exactly as they always did.
+    """
+    layers = terrain.get("layers") or []
+    if not layers:
+        return [(stroke, 1.0) for stroke in terrain.get("strokes") or []]
+    plan: list[tuple[dict[str, Any], float]] = []
+    for layer in layers:
+        if not isinstance(layer, dict) or layer.get("visible") is False:
+            continue
+        try:
+            opacity = float(layer.get("opacity", 1.0))
+        except (TypeError, ValueError):
+            opacity = 1.0
+        opacity = max(0.0, min(1.0, opacity))
+        if opacity <= 0.0:
+            continue
+        for stroke in layer.get("strokes") or []:
+            if isinstance(stroke, dict):
+                plan.append((stroke, opacity))
+    return plan
+
+
+def _apply_terrain_strokes(
+    document: WorldDocument, settings: TerrainSettings, terrain: dict[str, Any]
+) -> None:
+    plan = _stroke_plan(terrain)
+    if not plan:
+        return
+    field = HeightField.from_document(document)
+    splat = splat_planes(document)
+    biome = biome_planes(document)
+    topology = decode_i32(document.layers["topology"])
+    alpha = bytearray(document.layers["alpha"])
+    splat_resolution = int(round(len(splat[0]) ** 0.5))
+    topology_resolution = int(round(len(topology) ** 0.5))
+    height_modes = {"raise", "lower", "smooth", "flatten"}
+
+    for stroke, layer_opacity in plan:
+        try:
+            x = float(stroke.get("x") or 0.0)
+            z = float(stroke.get("z") or 0.0)
+            radius = max(0.1, float(stroke.get("radius") or 4.0))
+            strength = float(stroke.get("strength") or 1.0)
+            falloff = float(stroke.get("falloff") or 2.0)
+            mode = str(stroke.get("mode") or "raise")
+            sync = stroke.get("sync") or {}
+        except (TypeError, ValueError):
+            continue
+        height_active = mode in height_modes or bool(sync.get("height"))
+        height_mode = mode if mode in height_modes else "flatten"
+        if height_active:
+            target = field.average_height(x, z, radius) if height_mode == "flatten" else None
+            field.apply_brush(
+                x,
+                z,
+                radius,
+                strength=strength * layer_opacity,
+                mode=height_mode,
+                falloff=falloff,
+                target_height=target,
+            )
+        if mode == "splat" or sync.get("splat"):
+            channel = SPLAT_CHANNELS.index(str(stroke.get("splatChannel") or "grass")) if str(stroke.get("splatChannel") or "grass") in SPLAT_CHANNELS else 4
+            paint_splat(splat, splat_resolution, float(settings.size_metres), x, z, radius, channel, min(1.0, strength / 2) * layer_opacity)
+        if sync.get("biome"):
+            channel = ("arid", "temperate", "tundra", "arctic").index(str(stroke.get("biomeChannel") or "temperate")) if str(stroke.get("biomeChannel") or "temperate") in ("arid", "temperate", "tundra", "arctic") else 1
+            paint_biome(biome, splat_resolution, float(settings.size_metres), x, z, radius, channel, 0.55 * layer_opacity)
+        # Masks are boolean: a layer under half opacity leaves them untouched.
+        if (mode == "topology" or sync.get("topology")) and layer_opacity >= 0.5:
+            flags = [str(flag) for flag in stroke.get("topologyFlags") or [] if str(flag) in EDITOR_TOPOLOGY_FLAGS]
+            clear = [str(flag) for flag in stroke.get("topologyClearFlags") or [] if str(flag) in EDITOR_TOPOLOGY_FLAGS]
+            if flags:
+                mark_topology_region(topology, topology_resolution, float(settings.size_metres), x, z, radius, flags)
+            if clear:
+                mark_topology_region(topology, topology_resolution, float(settings.size_metres), x, z, radius, clear, clear=True)
+        if (mode == "alpha" or sync.get("alpha")) and layer_opacity >= 0.5:
+            set_alpha_region(alpha, int(round(len(alpha) ** 0.5)), float(settings.size_metres), x, z, radius, 0)
+
+    field.store(document)
+    store_splat(document, splat)
+    store_biome(document, biome)
+    document.layers["topology"] = encode_i32(topology)
+    document.layers["alpha"] = bytes(alpha)
+
+
+def _apply_cave_portals(
+    document: WorldDocument, settings: TerrainSettings, splines: list[dict[str, Any]]
+) -> None:
+    """Cut alpha holes where a cave path breaks the surface.
+
+    Mirrors `applyCavePortals` in the editor preview: a tunnel is only open once
+    its axis comes within a ceiling of the ground, so deep tunnels keep their
+    roof and entrances line up with the rendered shell.
+    """
+    caves = [
+        spline
+        for spline in splines
+        if str(spline.get("kind")) == "cave" and len(spline.get("nodes") or []) >= 2
+    ]
+    if not caves:
+        return
+    from .spline import sample_bezier, smooth_path
+
+    field = HeightField.from_document(document)
+    alpha = bytearray(document.layers["alpha"])
+    resolution = int(round(len(alpha) ** 0.5))
+
+    for cave in caves:
+        nodes = cave.get("nodes") or []
+        points = [
+            (float(node.get("x", 0.0)), float(node.get("y", 0.0)), float(node.get("z", 0.0)))
+            for node in nodes
+        ]
+        curve = str(cave.get("curve") or "catmull-rom")
+        closed = bool(cave.get("closed"))
+        sampled = (
+            sample_bezier(points, closed=closed)
+            if curve == "bezier"
+            else smooth_path(points, spacing=8.0, closed=closed)
+        )
+        width = max(2.0, float(cave.get("width") or 9.0))
+        ceiling = max(3.0, float(cave.get("ceilingHeight") or 7.0))
+        roughness = min(1.0, max(0.0, float(cave.get("roughness") or 0.3)))
+        for index, (x, y, z) in enumerate(sampled):
+            if abs(x) > settings.size_metres / 2 or abs(z) > settings.size_metres / 2:
+                continue
+            surface = field.sample(x, z)
+            # Spec trigger: roof = axisY + height / 2, cut within 0.5 m of the ground.
+            if y + ceiling * 0.5 < surface - 0.5:
+                continue
+            wobble = max(0.6, 1 + math.sin(index * 12.9898 + len(nodes)) * 0.5 * roughness)
+            radius = max(1.5, width * 0.65 * wobble)
+            set_alpha_region(alpha, resolution, float(settings.size_metres), x, z, radius, 0)
+
+    document.layers["alpha"] = bytes(alpha)
+
+
+def _apply_spline_corridors(
+    document: WorldDocument, settings: TerrainSettings, splines: list[dict[str, Any]]
+) -> None:
+    if not splines:
+        return
+    from .spline import smooth_path, sample_bezier
+
+    field = HeightField.from_document(document)
+    splat = splat_planes(document)
+    biome = biome_planes(document)
+    topology = decode_i32(document.layers["topology"])
+    splat_resolution = int(round(len(splat[0]) ** 0.5))
+    topology_resolution = int(round(len(topology) ** 0.5))
+    splat_by_kind = {"road": "gravel", "river": "sand", "rail": "stones", "apc": "dirt", "cargo": "dirt", "chinook": "dirt", "powerline": "gravel"}
+
+    for spline in splines:
+        if not spline.get("deformTerrain", True) and not spline.get("paintSplat", True):
+            continue
+        nodes = spline.get("nodes") or []
+        if len(nodes) < 2:
+            continue
+        points = [(float(node.get("x", 0.0)), 0.0, float(node.get("z", 0.0))) for node in nodes]
+        curve = str(spline.get("curve") or "catmull-rom")
+        closed = bool(spline.get("closed"))
+        sampled = sample_bezier(points, closed=closed) if curve == "bezier" else smooth_path(points, spacing=8.0, closed=closed)
+        width = max(1.0, float(spline.get("width") or 6.0))
+        channel = SPLAT_CHANNELS.index(splat_by_kind.get(str(spline.get("kind")), "gravel"))
+        topology_flag = str(spline.get("topologyFlag") or "")
+        in_bounds = [
+            point for point in sampled
+            if abs(point[0]) <= settings.size_metres / 2 and abs(point[2]) <= settings.size_metres / 2
+        ]
+        heights = [field.sample(x, z) for x, _y, z in in_bounds]
+        window = max(1, min(24, int(width / 4)))
+        profile: list[float] = []
+        for index in range(len(heights)):
+            start, end = max(0, index - window), min(len(heights), index + window + 1)
+            profile.append(sum(heights[start:end]) / max(1, end - start))
+        for index, (x, _y, z) in enumerate(in_bounds):
+            if spline.get("deformTerrain", True):
+                field.flatten_pad(
+                    x,
+                    z,
+                    radius=width * 0.5,
+                    falloff_width=6.0,
+                    target_height=profile[index],
+                )
+            if spline.get("paintSplat", True):
+                paint_splat(splat, splat_resolution, float(settings.size_metres), x, z, width * 0.5 + 4, channel, 0.85)
+                paint_biome(biome, splat_resolution, float(settings.size_metres), x, z, width * 0.5 + 4, 1, 0.2)
+            if topology_flag in EDITOR_TOPOLOGY_FLAGS:
+                mark_topology_region(topology, topology_resolution, float(settings.size_metres), x, z, width * 0.5 + 3, [topology_flag])
+
+    field.store(document)
+    store_splat(document, splat)
+    store_biome(document, biome)
+    document.layers["topology"] = encode_i32(topology)
+
+
 def _apply_monument_pads(
     document: WorldDocument, settings: TerrainSettings, placements: list[dict[str, Any]]
 ) -> None:
@@ -228,13 +764,47 @@ def _apply_monument_pads(
     field = HeightField.from_document(document)
     topology = decode_i32(document.layers["topology"])
     topology_resolution = int(math.sqrt(len(topology)))
+    splat = splat_planes(document)
+    biome = biome_planes(document)
+    splat_resolution = int(round(len(splat[0]) ** 0.5))
 
     for placement in placements:
         position = placement.get("position") or {}
         x = float(position.get("x", 0.0))
         z = float(position.get("z", 0.0))
         radius = float(placement.get("flattenRadius") or 40.0)
+        asset = f"{placement.get('assetId', '')} {placement.get('name', '')}".lower()
+        if any(word in asset for word in ("tree", "forest", "bush", "oak", "pine")):
+            splat_channel, biome_channel = 5, 1
+        elif any(word in asset for word in ("rock", "cliff", "stone", "ore", "boulder")):
+            splat_channel, biome_channel = 6, 2
+        elif any(word in asset for word in ("sand", "beach", "desert", "dune")):
+            splat_channel, biome_channel = 2, 0
+        elif any(word in asset for word in ("snow", "ice", "arctic")):
+            splat_channel, biome_channel = 1, 3
+        else:
+            splat_channel, biome_channel = 7, 1
         if placement.get("flatten", True):
+            paint_splat(
+                splat,
+                splat_resolution,
+                float(settings.size_metres),
+                x,
+                z,
+                radius * 1.15,
+                splat_channel,
+                0.72,
+            )
+            paint_biome(
+                biome,
+                splat_resolution,
+                float(settings.size_metres),
+                x,
+                z,
+                radius * 1.15,
+                biome_channel,
+                0.35,
+            )
             field.flatten_pad(
                 x,
                 z,
@@ -263,6 +833,8 @@ def _apply_monument_pads(
             )
 
     field.store(document)
+    store_splat(document, splat)
+    store_biome(document, biome)
     document.layers["topology"] = encode_i32(topology)
 
 

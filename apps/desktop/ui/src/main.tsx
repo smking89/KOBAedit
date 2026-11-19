@@ -15,3 +15,17 @@ createRoot(container).render(
     </WizardProvider>
   </StrictMode>,
 );
+
+// The splash is plain markup in index.html; hold it for a beat after the first
+// paint so a fast machine does not flash it, then fade it out and drop the node.
+const splash = document.getElementById("boot-splash");
+const dismissSplash = () => {
+  if (!splash || splash.classList.contains("is-hidden")) return;
+  splash.classList.add("is-hidden");
+  window.setTimeout(() => splash.remove(), 420);
+};
+
+// A plain timeout rather than requestAnimationFrame: background or minimized
+// windows throttle frames, and the splash must never stay stuck on screen.
+// Long enough for the wordmark reveal (760 ms) and the tag/bar stagger to play.
+window.setTimeout(dismissSplash, 1000);

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 
+import { lightingState } from "../lib/lighting";
 import { detectQualityProfile } from "../lib/quality";
 import type { DecalStroke, MaterialLayer, WearSettings, WizardDraft } from "../wizard/types";
 import {
@@ -111,6 +112,7 @@ export class SkinViewport {
   setDraft(draft: WizardDraft): void {
     this.draft = draft;
     this.applyLighting(draft.skin.wear);
+    this.applyTimeOfDay(draft);
     this.applyLayers(draft.skin.layers, draft.skin.wear);
     this.applyDecals(draft.skin.decals, draft.skin.wear);
     this.requestRender();
@@ -154,6 +156,21 @@ export class SkinViewport {
 
     group.rotation.y = -0.35;
     this.scene.add(group);
+  }
+
+  /**
+   * The day preset follows the shared 24-hour scrubber so emissive skin work
+   * can be checked at noon and midnight. Dusk/flashlight/night presets keep
+   * their authored look.
+   */
+  private applyTimeOfDay(draft: WizardDraft): void {
+    if ((draft.skin.wear.lighting ?? "day") !== "day") return;
+    const state = lightingState(draft.lighting?.timeOfDay ?? 630, draft.lighting?.weather ?? "clear");
+    this.keyLight.color.setHex(state.sunColor);
+    this.keyLight.intensity = 0.35 + state.daylight * 2.15;
+    this.fillLight.intensity = 0.08 + state.daylight * 0.5;
+    this.scene.background = new THREE.Color(state.skyColor);
+    this.renderer.toneMappingExposure = 0.85 + state.daylight * 0.3;
   }
 
   private applyLighting(wear: WearSettings): void {

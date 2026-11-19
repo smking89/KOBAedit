@@ -20,11 +20,18 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 from .db import default_db_path, project_root
 from .indexer import AssetIndexer, _load_manifest, infer_mesh_kind
-from .prefab_bounds import extract_prefab_bounds
+from .prefab_bounds import (
+    PrefabBounds,
+    build_mesh_index,
+    extract_game_manifest_bounds,
+    extract_item_prefab_bounds_from_links,
+    extract_prefab_bounds,
+    read_game_manifest_paths,
+)
 from .unity_bundle import (
     BundleDependencyError,
     BundleExtractionError,
@@ -171,8 +178,10 @@ class BundleIngestor:
         thumbnail_dir: str | Path | None = None,
         *,
         extract_dir: str | Path | None = None,
+        glb_cache_dir: str | Path | None = None,
         make_thumbnails: bool = True,
         connection: sqlite3.Connection | None = None,
+        progress: Callable[..., None] | None = None,
     ) -> None:
         self.indexer = AssetIndexer(
             db_path or default_db_path(), thumbnail_dir, connection=connection
@@ -181,8 +190,13 @@ class BundleIngestor:
         self.extract_root = (
             Path(extract_dir) if extract_dir else project_root() / "data" / "extracted"
         )
+        self.glb_cache_dir = (
+            Path(glb_cache_dir).expanduser() if glb_cache_dir else None
+        )
         self.make_thumbnails = make_thumbnails
+        self.progress = progress
         self._extracted_pack_id: int | None = None
+        self._linked_bounds: dict[str, PrefabBounds] = {}
 
     # ------------------------------------------------------------------ public
     def ingest(
@@ -197,6 +211,7 @@ class BundleIngestor:
         force: bool = False,
         manifest_path: str | Path | None = None,
         extract_bounds: bool = True,
+        skin_only: bool = False,
     ) -> BundleIngestReport:
         if extract not in ("none", "meshes", "textures", "all"):
             raise ValueError("extract must be one of: none, meshes, textures, all")
@@ -214,6 +229,7 @@ class BundleIngestor:
         files = _expand_paths(paths)
         if not files:
             raise FileNotFoundError("no UnityFS bundles found in the given paths")
+        self._linked_bounds = {}
         root = _common_root(files)
         report = BundleIngestReport(pack=pack_name, root=str(root))
         pack_id = self.indexer.register_pack(
@@ -221,9 +237,14 @@ class BundleIngestor:
         )
         manifest = _load_manifest(manifest_path)
 
-        for path in files:
+        total = len(files)
+        if self.progress:
+            self.progress("scanning", 0, total, f"Found {total} bundle(s)")
+        for index, path in enumerate(files):
             result = BundleResult(name=path.name)
             bundle_started = time.perf_counter()
+            if self.progress:
+                self.progress("bundle", index, total, path.name)
             try:
                 self._ingest_one(
                     path,
@@ -237,6 +258,7 @@ class BundleIngestor:
                     force=force,
                     manifest=manifest,
                     extract_bounds=extract_bounds,
+                    skin_only=skin_only,
                 )
             except BundleDependencyError:
                 raise
@@ -252,6 +274,11 @@ class BundleIngestor:
             report.extracted_textures += result.extracted_textures
             if result.skipped:
                 report.skipped += 1
+            if self.progress:
+                self.progress("bundle", index + 1, total, f"Indexed {path.name}")
+
+        if extract_bounds and self._linked_bounds:
+            self._backfill_linked_bounds(pack_id)
 
         self.connection.execute(
             "UPDATE asset_packs SET last_indexed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
@@ -275,6 +302,7 @@ class BundleIngestor:
         force: bool,
         manifest: dict[str, dict] | None,
         extract_bounds: bool,
+        skin_only: bool = False,
     ) -> None:
         stat = path.stat()
         existing = self.connection.execute(
@@ -287,6 +315,7 @@ class BundleIngestor:
             and extract == "none"
             and int(existing["file_bytes"]) == stat.st_size
             and abs(float(existing["file_mtime"]) - stat.st_mtime) < 1.0
+            and int(existing["manifest_prefab_count"]) >= 0
         ):
             result.skipped = True
             result.unity_revision = str(existing["unity_revision"])
@@ -295,13 +324,29 @@ class BundleIngestor:
             result.container = int(existing["container_count"])
             return
 
+        if self.progress:
+            self.progress("reading", 0, 1, path.name)
         info = read_bundle_info(path)
         env = load_bundle(path)
+        if self.progress:
+            self.progress("bounds", 0, 1, f"Reading {path.name}")
         container = read_container(env)
         container_by_id: dict[int, str] = {}
         for entry in container:
             if entry.path_id:
                 container_by_id.setdefault(entry.path_id, entry.path)
+
+        # Monument scenes never expose prefab containers. The GameManifest does
+        # list every real prefab path, including monuments, so index those too.
+        manifest_paths: dict[str, str] = {}
+        try:
+            manifest_paths = {
+                prefab: guid
+                for prefab, guid in read_game_manifest_paths(env).items()
+                if prefab.lower().endswith(".prefab")
+            }
+        except Exception:
+            manifest_paths = {}
 
         counts = Counter(obj.type.name for obj in env.objects)
         result.unity_revision = info.unity_revision
@@ -314,15 +359,39 @@ class BundleIngestor:
         # AABB extraction reads meshes from this bundle and can be slow for
         # large scene bundles. Do it before opening the write transaction so a
         # best-effort bounds pass never holds the database lock.
+        if self.progress and extract_bounds:
+            self.progress("bounds", 1, 2, f"Extracting prefab bounds from {path.name}")
+        mesh_index = None
         bounds_by_path = {}
+        manifest_bounds: dict[str, PrefabBounds] = {}
+        if extract_bounds:
+            try:
+                mesh_index = build_mesh_index(env)
+            except Exception:
+                mesh_index = None
         if extract_bounds and any(
             entry.path.lower().endswith(".prefab") for entry in container
         ):
             try:
-                bounds_by_path = extract_prefab_bounds(env, container=container)
+                bounds_by_path = extract_prefab_bounds(
+                    env, container=container, mesh_index=mesh_index
+                )
             except Exception as exc:  # bounds must never block indexing
                 result.error = f"bounds: {type(exc).__name__}: {exc}"
+        if extract_bounds and len(env.objects) <= 500_000:
+            # Content carries the GameManifest and the real prefab roots. Item
+            # bundles are linked to these bounds after their own rows exist.
+            try:
+                manifest_bounds = extract_game_manifest_bounds(
+                    env, mesh_index=mesh_index
+                )
+                for prefab_path, bounds in manifest_bounds.items():
+                    self._linked_bounds[prefab_path.casefold()] = bounds
+            except Exception as exc:  # bounds must never block indexing
+                result.error = f"linked bounds: {type(exc).__name__}: {exc}"
 
+        if self.progress:
+            self.progress("indexing", 0, 1, f"Writing catalogue for {path.name}")
         # Inventory and prefab import are one transaction so a failed bundle
         # never leaves a half-written catalogue behind.
         self.connection.execute("BEGIN")
@@ -332,8 +401,9 @@ class BundleIngestor:
                 INSERT INTO bundles (
                     pack_id, path, name, file_bytes, file_mtime,
                     unity_version, unity_revision, compression, flags,
-                    block_count, node_count, container_count, object_counts_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    block_count, node_count, container_count, object_counts_json,
+                    manifest_prefab_count
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT (pack_id, path) DO UPDATE SET
                     name = excluded.name, file_bytes = excluded.file_bytes,
                     file_mtime = excluded.file_mtime,
@@ -343,6 +413,7 @@ class BundleIngestor:
                     block_count = excluded.block_count, node_count = excluded.node_count,
                     container_count = excluded.container_count,
                     object_counts_json = excluded.object_counts_json,
+                    manifest_prefab_count = excluded.manifest_prefab_count,
                     indexed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                 """,
                 (
@@ -359,6 +430,7 @@ class BundleIngestor:
                     len(info.nodes),
                     len(container),
                     json.dumps(dict(counts.most_common(40))),
+                    len(manifest_paths),
                 ),
             )
             row = self.connection.execute(
@@ -453,6 +525,15 @@ class BundleIngestor:
                         tuple(float(value) for value in entry["boundsMax"]),
                         source="manifest",
                     )
+            manifest_indexed = 0
+            container_paths = set(prefab_paths)
+            for prefab_path in sorted(manifest_paths):
+                if prefab_path in container_paths:
+                    continue
+                self.indexer.index_bundle_prefab(
+                    pack_id, prefab_path, bundle_name=path.name, source="game-manifest"
+                )
+                manifest_indexed += 1
             if bounds_by_path:
                 for prefab_path, bounds in bounds_by_path.items():
                     self.indexer.update_prefab_bounds(
@@ -460,15 +541,29 @@ class BundleIngestor:
                         prefab_path,
                         bounds.bounds_min,
                         bounds.bounds_max,
-                        source=f"renderers:{bounds.renderers}",
+                        source=bounds.source,
                     )
-            result.prefabs = len(prefab_paths)
+            for prefab_path in manifest_paths:
+                bounds = manifest_bounds.get(prefab_path)
+                if bounds is None:
+                    continue
+                self.indexer.update_prefab_bounds(
+                    pack_id,
+                    prefab_path,
+                    bounds.bounds_min,
+                    bounds.bounds_max,
+                    source=bounds.source,
+                )
+            self._apply_linked_bounds(pack_id, prefab_paths)
+            result.prefabs = len(prefab_paths) + manifest_indexed
             self.connection.execute("COMMIT")
         except Exception:
             self.connection.execute("ROLLBACK")
             raise
 
         if extract in ("meshes", "all"):
+            if self.progress:
+                self.progress("meshes", 0, max(1, limit), f"Extracting meshes from {path.name}")
             result.extracted_meshes, mesh_errors = self._extract_meshes(
                 env,
                 bundle_id,
@@ -477,6 +572,7 @@ class BundleIngestor:
                 container_by_id,
                 match=match,
                 limit=limit,
+                skin_only=skin_only,
             )
             for error in mesh_errors:
                 result.error = error if not result.error else f"{result.error}; {error}"
@@ -492,6 +588,44 @@ class BundleIngestor:
             for error in texture_errors:
                 result.error = error if not result.error else f"{result.error}; {error}"
 
+    # ------------------------------------------------------------------- bounds
+    def _apply_linked_bounds(self, pack_id: int, prefab_paths: Sequence[str]) -> int:
+        """Fill item-definition rows from their real sibling/world prefab."""
+        if not self._linked_bounds:
+            return 0
+        mapped = extract_item_prefab_bounds_from_links(
+            prefab_paths, self._linked_bounds
+        )
+        updated = 0
+        for prefab_path, bounds in mapped.items():
+            if self.indexer.update_prefab_bounds(
+                pack_id,
+                prefab_path,
+                bounds.bounds_min,
+                bounds.bounds_max,
+                source=f"prefab:{bounds.source}",
+            ):
+                updated += 1
+        return updated
+
+    def _backfill_linked_bounds(self, pack_id: int) -> int:
+        """Resolve links after all bundles are indexed, regardless of file order."""
+        rows = self.connection.execute(
+            """
+            SELECT asset_path FROM prefabs
+             WHERE pack_id = ? AND lower(asset_path) LIKE '%.item.prefab'
+               AND bounds_max_x <= bounds_min_x
+               AND bounds_max_y <= bounds_min_y
+               AND bounds_max_z <= bounds_min_z
+            """,
+            (pack_id,),
+        ).fetchall()
+        if not rows:
+            return 0
+        return self._apply_linked_bounds(
+            pack_id, [str(row["asset_path"]) for row in rows]
+        )
+
     # --------------------------------------------------------------- extraction
     def _extract_meshes(
         self,
@@ -503,6 +637,7 @@ class BundleIngestor:
         *,
         match: str | None,
         limit: int,
+        skin_only: bool = False,
     ) -> tuple[int, list[str]]:
         if limit == 0:
             return 0, []
@@ -511,6 +646,8 @@ class BundleIngestor:
         for obj, name, container in _iter_targets(env, "Mesh", container_by_id, match):
             if extracted >= limit:
                 break
+            if skin_only and not _is_skin_mesh(name, container):
+                continue
             display = name or Path(container or "mesh").stem
             path_id = int(obj.path_id)
             destination = (
@@ -539,10 +676,33 @@ class BundleIngestor:
                     display_name=display,
                     item_kind=infer_mesh_kind(container or display),
                 )
+                if self.glb_cache_dir is not None:
+                    try:
+                        from .prefab_glb import export_obj_glb
+
+                        asset_path = _relative(destination, self.extract_root)
+                        export_obj_glb(destination, asset_path, self.glb_cache_dir)
+                    except (OSError, ValueError):
+                                                # A missing turntable cache must not fail the mesh index.
+                        pass
                 extracted += 1
+                if self.progress and (extracted <= 3 or extracted % 5 == 0):
+                    self.progress(
+                        "meshes",
+                        extracted,
+                        max(1, limit),
+                        f"{display} ({bundle_path.name})",
+                    )
             except (BundleExtractionError, OSError, ValueError) as exc:
                 errors.append(f"{display}: {exc}")
+        if self.progress:
+            self.progress(
+                "meshes", extracted, max(1, limit), f"Finished {bundle_path.name}"
+            )
         return extracted, errors
+
+
+
 
     def _extract_textures(
         self,
@@ -628,6 +788,20 @@ def _iter_targets(
             if needle not in haystack:
                 continue
         yield obj, name, container
+
+
+SKIN_MESH_HINTS = (
+    "/weapons/",
+    "/attire/",
+    "/clothing/",
+    "/wearable/",
+    "/skinviewer/models/",
+)
+
+
+def _is_skin_mesh(name: str, container: str | None) -> bool:
+    haystack = f"{container or ''}/{name}".replace("\\", "/").lower()
+    return any(hint in haystack for hint in SKIN_MESH_HINTS)
 
 
 def _expand_paths(paths: Sequence[str | Path]) -> list[Path]:

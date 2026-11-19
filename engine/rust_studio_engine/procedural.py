@@ -35,6 +35,19 @@ BIOME_PRESET_WEIGHTS = {
     "archipelago": (0.25, 0.55, 0.15, 0.05),
 }
 
+# Channel order shared with the TypeScript preview (`SPLAT_INDEX`/`BIOME_INDEX`).
+SPLAT_CHANNELS = {
+    "dirt": 0,
+    "snow": 1,
+    "sand": 2,
+    "rock": 3,
+    "grass": 4,
+    "forest": 5,
+    "stones": 6,
+    "gravel": 7,
+}
+BIOME_CHANNELS = {"arid": 0, "temperate": 1, "tundra": 2, "arctic": 3}
+
 
 @dataclass
 class TerrainSettings:
@@ -47,11 +60,19 @@ class TerrainSettings:
     biome_weights: tuple[float, float, float, float] = (0.15, 0.65, 0.15, 0.05)
     detail: float = 0.55
     seed_offset: int = 0
+    # Flat starting floor (ocean starters, biome sandboxes, monument stage).
+    # ``None`` keeps the procedural heightmap.
+    floor_height: float | None = None
+    floor_splat: str | None = None
+    floor_biome: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["biomeWeights"] = list(self.biome_weights)
         del payload["biome_weights"]
+        payload["floorHeight"] = payload.pop("floor_height")
+        payload["floorSplat"] = payload.pop("floor_splat")
+        payload["floorBiome"] = payload.pop("floor_biome")
         return payload
 
     @classmethod
@@ -66,7 +87,25 @@ class TerrainSettings:
             tree_density=float(data.get("treeDensity", data.get("tree_density", 0.7))),
             biome_weights=(float(weights[0]), float(weights[1]), float(weights[2]), float(weights[3])),
             detail=float(data.get("detail", 0.55)),
+            floor_height=_optional_float(data.get("floorHeight", data.get("floor_height"))),
+            floor_splat=_optional_str(data.get("floorSplat", data.get("floor_splat"))),
+            floor_biome=_optional_str(data.get("floorBiome", data.get("floor_biome"))),
         )
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    return str(value)
 
 
 @dataclass
@@ -170,8 +209,11 @@ def generate_terrain(settings: TerrainSettings) -> GeneratedTerrain:
     while splat_resolution < max(1, int(settings.size_metres * 0.5)):
         splat_resolution <<= 1
 
-    coarse = _coarse_grid(height_resolution, 257)
-    heights = _generate_height(settings, height_resolution, coarse)
+    if settings.floor_height is not None:
+        heights = [float(settings.floor_height)] * (height_resolution * height_resolution)
+    else:
+        coarse = _coarse_grid(height_resolution, 257)
+        heights = _generate_height(settings, height_resolution, coarse)
 
     raw_heights = [height_metres_to_raw(value) for value in heights]
 
@@ -185,7 +227,13 @@ def generate_terrain(settings: TerrainSettings) -> GeneratedTerrain:
     weights = settings.biome_weights
     total_weight = sum(weights) or 1.0
 
-    for sy in range(splat_resolution):
+    texels = splat_resolution * splat_resolution
+    if settings.floor_height is not None:
+        splat_channel = SPLAT_CHANNELS.get(settings.floor_splat or "grass", 4)
+        biome_channel = BIOME_CHANNELS.get(settings.floor_biome or "temperate", 1)
+        splat_planes[splat_channel] = bytearray([255]) * texels
+        biome_planes[biome_channel] = bytearray([255]) * texels
+    for sy in range(0 if settings.floor_height is not None else splat_resolution):
         hy = min(height_resolution - 1, int(sy / splat_resolution * (height_resolution - 1)))
         for sx in range(splat_resolution):
             hx = min(height_resolution - 1, int(sx / splat_resolution * (height_resolution - 1)))

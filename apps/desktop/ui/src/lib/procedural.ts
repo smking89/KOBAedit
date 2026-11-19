@@ -1,4 +1,16 @@
-import type { PrefabPlacement, TerrainPreset, TerrainSettings } from "../wizard/types";
+import type {
+  BiomeChannel,
+  PrefabPlacement,
+  RouteSpline,
+  SplatChannel,
+  TerrainBrush,
+  TerrainPreset,
+  TerrainSettings,
+  TerrainStroke,
+  TopologyFlag,
+} from "../wizard/types";
+import { activeLayer, clampOpacity, plannedStrokes } from "./layers";
+import { sampleSplineNodes } from "./splineMath";
 
 /**
  * Procedural terrain preview, mirroring `engine/rust_studio_engine/procedural.py`.
@@ -23,6 +35,8 @@ export interface TerrainPreview {
   topology: Uint32Array;
   minHeight: number;
   maxHeight: number;
+  /** Number of cave portal samples carved into the alpha layer. */
+  cavePortals?: number;
 }
 
 function hash2(x: number, y: number, seed: number): number {
@@ -64,6 +78,11 @@ function fbm(x: number, y: number, seed: number, octaves = 5): number {
 }
 
 export function generateTerrainPreview(settings: TerrainSettings, resolution = 257): TerrainPreview {
+  // A flat floor skips the noise passes entirely: ocean starters, biome
+  // sandboxes and the monument testing stage all want an exact elevation.
+  if (typeof settings.floorHeight === "number" && Number.isFinite(settings.floorHeight)) {
+    return generateFloorPreview(settings, resolution, settings.floorHeight);
+  }
   const preset = PRESETS[settings.preset] ?? PRESETS.islands;
   const heights = new Float32Array(resolution * resolution);
   const splat = new Uint8Array(resolution * resolution * 8);
@@ -143,6 +162,35 @@ export function generateTerrainPreview(settings: TerrainSettings, resolution = 2
   };
 }
 
+/** Uniform height, one splat channel and one biome channel across the map. */
+function generateFloorPreview(
+  settings: TerrainSettings,
+  resolution: number,
+  height: number,
+): TerrainPreview {
+  const heights = new Float32Array(resolution * resolution).fill(height);
+  const splatChannel = SPLAT_INDEX[settings.floorSplat ?? "grass"] ?? 4;
+  const biomeChannel = BIOME_INDEX[settings.floorBiome ?? "temperate"] ?? 1;
+  const splat = new Uint8Array(resolution * resolution * 8);
+  const biome = new Uint8Array(resolution * resolution * 4);
+  const alpha = new Uint8Array(resolution * resolution).fill(255);
+  const topology = new Uint32Array(resolution * resolution);
+  for (let index = 0; index < heights.length; index += 1) {
+    splat[index * 8 + splatChannel] = 255;
+    biome[index * 4 + biomeChannel] = 255;
+  }
+  return {
+    resolution,
+    heights,
+    splat,
+    biome,
+    alpha,
+    topology,
+    minHeight: height,
+    maxHeight: height,
+  };
+}
+
 /**
  * Flatten preview heights under monument pads with the same inner radius and
  * smooth falloff used by the exporter. Also stamps the editor topology flags so
@@ -163,6 +211,11 @@ export function applyPlacementPads(
 
   for (const placement of placements) {
     if (placement.flatten === false) continue;
+    const profile =
+      PREFAB_SPLAT_PROFILE.find((entry) => entry.match.test(`${placement.assetId} ${placement.name}`)) ??
+      PREFAB_SPLAT_PROFILE[0];
+    const splatChannel = SPLAT_INDEX[profile.splat] ?? 4;
+    const biomeChannel = BIOME_INDEX[profile.biome] ?? 1;
     const radius = Math.max(0, placement.flattenRadius);
     if (radius <= 0) continue;
     const falloff = Math.max(0, placement.flattenFalloff);
@@ -212,13 +265,194 @@ export function applyPlacementPads(
         const distance = Math.hypot(worldX - centreX, worldZ - centreZ);
         if (distance > outer) continue;
         const index = iz * resolution + ix;
-        if (distance <= radius * 1.15) {
+        if (distance <= radius * 1.15 && placement.clearFoliage) {
           preview.topology[index] |= FOLIAGE_CLEARED | MONUMENT_PAD;
         }
-        if (distance <= radius) preview.topology[index] |= NO_BUILD;
+        if (distance <= radius && placement.noBuildZone) preview.topology[index] |= NO_BUILD;
+        const blend = distance <= radius
+          ? 0.92
+          : Math.max(0, 1 - (distance - radius) / Math.max(1, falloff));
+        if (blend > 0) {
+          paintSplatTexel(preview, index, splatChannel, blend * 0.72);
+          paintBiomeTexel(preview, index, biomeChannel, blend * 0.35);
+        }
       }
     }
   }
+}
+
+/** Replay persisted brush strokes on top of the generated preview. */
+export function applySlopeTopology(
+  preview: TerrainPreview,
+  settings: TerrainSettings,
+): void {
+  const rules = settings.slopeTopology ?? [];
+  if (!rules.length) return;
+  const resolution = preview.resolution;
+  const texel = settings.sizeMetres / Math.max(1, resolution - 1);
+  for (let z = 1; z < resolution - 1; z += 1) {
+    for (let x = 1; x < resolution - 1; x += 1) {
+      const index = z * resolution + x;
+      const dx = (preview.heights[index + 1] - preview.heights[index - 1]) / (2 * texel);
+      const dz = (preview.heights[index + resolution] - preview.heights[index - resolution]) / (2 * texel);
+      const slope = (Math.atan(Math.hypot(dx, dz)) * 180) / Math.PI;
+      for (const rule of rules) {
+        if (slope < rule.minSlope || slope > rule.maxSlope) continue;
+        for (const flag of rule.flags) preview.topology[index] |= TOPOLOGY_BITS[flag] ?? 0;
+      }
+    }
+  }
+}
+
+export function applyStrokesToPreview(
+  preview: TerrainPreview,
+  settings: TerrainSettings,
+): void {
+  // Visible layers in order, each scaled by its opacity; falls back to the
+  // legacy flat history for projects saved before layers existed.
+  for (const entry of plannedStrokes(settings)) {
+    stampBrush(
+      preview,
+      settings.sizeMetres,
+      entry.stroke.x,
+      entry.stroke.z,
+      entry.stroke,
+      entry.opacity,
+    );
+  }
+}
+
+export function stampBrushPreview(
+  preview: TerrainPreview,
+  settings: TerrainSettings,
+  worldX: number,
+  worldZ: number,
+): boolean {
+  return applyBrushToPreview(preview, settings, worldX, worldZ);
+}
+
+/** Deform and paint terrain under roads, rivers and route splines. */
+export function applySplineCorridors(
+  preview: TerrainPreview,
+  splines: RouteSpline[],
+  sizeMetres: number,
+): void {
+  const resolution = preview.resolution;
+  const texel = sizeMetres / Math.max(1, resolution - 1);
+  const splatFor: Record<string, SplatChannel> = {
+    road: "gravel",
+    river: "sand",
+    rail: "stones",
+    apc: "dirt",
+    cargo: "dirt",
+    chinook: "dirt",
+    powerline: "gravel",
+  };
+
+  for (const spline of splines) {
+    // Caves are tunnels, not surface corridors: they never deform terrain.
+    if (spline.kind === "cave") continue;
+    if (spline.nodes.length < 2) continue;
+    const points = sampleSplineNodes(spline.nodes, spline.closed, spline.curve, 10);
+    const channel = SPLAT_INDEX[splatFor[spline.kind] ?? "gravel"] ?? 7;
+    const outer = Math.max(2, spline.width * 0.5 + 5);
+    const radiusTexels = Math.ceil(outer / texel);
+
+    for (const point of points) {
+      const centreX = Math.round((point.x + sizeMetres / 2) / texel);
+      const centreZ = Math.round((point.z + sizeMetres / 2) / texel);
+      if (centreX < 0 || centreZ < 0 || centreX >= resolution || centreZ >= resolution) continue;
+      const target =
+        preview.heights[Math.min(resolution - 1, centreZ) * resolution + Math.min(resolution - 1, centreX)];
+      for (let iz = centreZ - radiusTexels; iz <= centreZ + radiusTexels; iz += 1) {
+        if (iz < 0 || iz >= resolution) continue;
+        const worldZ = (iz - (resolution - 1) / 2) * texel;
+        for (let ix = centreX - radiusTexels; ix <= centreX + radiusTexels; ix += 1) {
+          if (ix < 0 || ix >= resolution) continue;
+          const worldX = (ix - (resolution - 1) / 2) * texel;
+          const distance = Math.hypot(worldX - point.x, worldZ - point.z);
+          if (distance > outer) continue;
+          const index = iz * resolution + ix;
+          const blend = distance <= spline.width * 0.5
+            ? 1
+            : 1 - smoothstep((distance - spline.width * 0.5) / Math.max(1, outer - spline.width * 0.5));
+          if (blend <= 0) continue;
+          if (spline.deformTerrain) {
+            preview.heights[index] += (target - preview.heights[index]) * blend * 0.92;
+          }
+          if (spline.paintSplat) {
+            paintSplatTexel(preview, index, channel, blend * 0.85);
+            paintBiomeTexel(preview, index, spline.kind === "river" ? 1 : 1, blend * 0.2);
+          }
+          if (spline.topologyFlag) {
+            preview.topology[index] |= TOPOLOGY_BITS[spline.topologyFlag] ?? 0;
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Cut alpha holes wherever a cave path reaches the surface.
+ *
+ * Alpha < 0.5 is void for the terrain shader and the exporter, so a portal is
+ * carved exactly where the tunnel axis comes within a ceiling of the terrain
+ * instead of leaving an invisible terrain roof over the entrance.
+ */
+export function applyCavePortals(
+  preview: TerrainPreview,
+  splines: RouteSpline[],
+  sizeMetres: number,
+): number {
+  const caves = splines.filter((spline) => spline.kind === "cave" && spline.nodes.length >= 2);
+  if (!caves.length) return 0;
+  const resolution = preview.resolution;
+  const texel = sizeMetres / Math.max(1, resolution - 1);
+  const half = sizeMetres / 2;
+  let portals = 0;
+
+  for (const cave of caves) {
+    const samples = sampleSplineNodes(cave.nodes, cave.closed, cave.curve ?? "catmull-rom", 26);
+    const ceiling = Math.max(3, cave.ceilingHeight ?? 7);
+    const width = Math.max(2, cave.width);
+    const roughness = Math.min(1, Math.max(0, cave.roughness ?? 0.3));
+    for (let index = 0; index < samples.length; index += 1) {
+      const point = samples[index];
+      const column = Math.round((point.x + half) / texel);
+      const row = Math.round((point.z + half) / texel);
+      if (column < 0 || row < 0 || column >= resolution || row >= resolution) continue;
+      const surface = preview.heights[row * resolution + column];
+      // Spec trigger: roof height = axisY + height / 2; cut once the roof is
+      // within 0.5 m of the terrain.
+      const ceilingY = point.y + ceiling * 0.5;
+      if (ceilingY < surface - 0.5) continue;
+      const wobble = Math.max(0.6, 1 + Math.sin(index * 12.9898 + cave.nodes.length) * 0.5 * roughness);
+      // The preview grid is coarse (≈17 m/texel at 256 over 4500 m), so a true
+      // 4.5 m portal would vanish; keep the hole at least two texels wide.
+      const radius = Math.max(width * 0.65 * wobble, texel * 1.6);
+      const radiusTexels = Math.ceil(radius / texel);
+      for (let iz = row - radiusTexels; iz <= row + radiusTexels; iz += 1) {
+        if (iz < 0 || iz >= resolution) continue;
+        const worldZ = (iz - (resolution - 1) / 2) * texel;
+        for (let ix = column - radiusTexels; ix <= column + radiusTexels; ix += 1) {
+          if (ix < 0 || ix >= resolution) continue;
+          const worldX = (ix - (resolution - 1) / 2) * texel;
+          const distance = Math.hypot(worldX - point.x, worldZ - point.z);
+          if (distance > radius) continue;
+          const index2 = iz * resolution + ix;
+          // Soft shoulder: solid hole in the middle, feathered rim.
+          const feather = radius * 0.82;
+          const depth = distance <= feather ? 0 : Math.round(((distance - feather) / (radius - feather)) * 96);
+          if (preview.alpha[index2] > depth) preview.alpha[index2] = depth;
+        }
+      }
+      portals += 1;
+    }
+  }
+
+  preview.cavePortals = portals;
+  return portals;
 }
 
 function smoothstep(value: number): number {
@@ -255,96 +489,197 @@ export function samplePreviewHeight(
 }
 
 /** Apply one brush stamp to the preview heightfield. Returns true if modified. */
+type BrushInput = Omit<TerrainStroke, "id" | "x" | "z">;
+
+function isHeightMode(mode: TerrainStroke["mode"]): boolean {
+  return mode === "raise" || mode === "lower" || mode === "smooth" || mode === "flatten";
+}
+
+function stampBrush(
+  preview: TerrainPreview,
+  sizeMetres: number,
+  worldX: number,
+  worldZ: number,
+  brush: BrushInput,
+  opacity = 1,
+): boolean {
+  const resolution = preview.resolution;
+  const texel = sizeMetres / (resolution - 1);
+  const [centreX, centreZ] = worldToGrid(worldX, worldZ, sizeMetres, resolution);
+  const radius = Math.max(1, Math.ceil(brush.radius / texel));
+  const x0 = Math.max(0, Math.floor(centreX - radius));
+  const x1 = Math.min(resolution - 1, Math.ceil(centreX + radius));
+  const z0 = Math.max(0, Math.floor(centreZ - radius));
+  const z1 = Math.min(resolution - 1, Math.ceil(centreZ + radius));
+  const heightActive = isHeightMode(brush.mode) || brush.sync.height;
+  const heightMode = isHeightMode(brush.mode) ? brush.mode : "flatten";
+  const splatActive = brush.mode === "splat" || brush.sync.splat;
+  const biomeActive = brush.sync.biome;
+  const topologyActive = brush.mode === "topology" || brush.sync.topology;
+  const alphaActive = brush.mode === "alpha" || brush.sync.alpha;
+  const splatChannel = SPLAT_INDEX[brush.splatChannel] ?? 4;
+  const biomeChannel = BIOME_INDEX[brush.biomeChannel] ?? 1;
+  const topologySet = topologyMask(brush.topologyFlags);
+  const topologyClear = topologyMask(brush.topologyClearFlags ?? []);
+  // Masks are boolean, so a layer below half opacity leaves them untouched.
+  const maskActive = opacity >= 0.5;
+  const strength = brush.strength * opacity;
+  let modified = false;
+
+  // Flatten and synchronized height layers use the average height under the
+  // brush, not the centre texel, so smooth pads stay level on slopes.
+  let flattenTarget = 0;
+  if (heightActive && heightMode === "flatten") {
+    let total = 0;
+    let count = 0;
+    for (let z = z0; z <= z1; z += 1) {
+      for (let x = x0; x <= x1; x += 1) {
+        const worldGridX = (x / (resolution - 1)) * sizeMetres - sizeMetres / 2;
+        const worldGridZ = (z / (resolution - 1)) * sizeMetres - sizeMetres / 2;
+        if (Math.hypot(worldGridX - worldX, worldGridZ - worldZ) > brush.radius) continue;
+        total += preview.heights[z * resolution + x];
+        count += 1;
+      }
+    }
+    flattenTarget = count ? total / count : 0;
+  }
+
+  for (let z = z0; z <= z1; z += 1) {
+    for (let x = x0; x <= x1; x += 1) {
+      const worldGridX = (x / (resolution - 1)) * sizeMetres - sizeMetres / 2;
+      const worldGridZ = (z / (resolution - 1)) * sizeMetres - sizeMetres / 2;
+      const distance = Math.hypot(worldGridX - worldX, worldGridZ - worldZ);
+      if (distance > brush.radius) continue;
+      const weight = Math.pow(1 - distance / brush.radius, Math.max(0.5, brush.falloff));
+      const index = z * resolution + x;
+
+      if (heightActive) {
+        if (heightMode === "raise") preview.heights[index] += strength * weight;
+        else if (heightMode === "lower") preview.heights[index] -= strength * weight;
+        else if (heightMode === "smooth") {
+          const neighbours: number[] = [];
+          if (x > 0) neighbours.push(preview.heights[index - 1]);
+          if (x < resolution - 1) neighbours.push(preview.heights[index + 1]);
+          if (z > 0) neighbours.push(preview.heights[index - resolution]);
+          if (z < resolution - 1) neighbours.push(preview.heights[index + resolution]);
+          const average = neighbours.length
+            ? neighbours.reduce((sum, value) => sum + value, 0) / neighbours.length
+            : preview.heights[index];
+          preview.heights[index] += (average - preview.heights[index]) * Math.min(1, weight);
+        } else {
+          preview.heights[index] += (flattenTarget - preview.heights[index]) * Math.min(1, weight * strength);
+        }
+        modified = true;
+      }
+      if (splatActive) {
+        paintSplatTexel(preview, index, splatChannel, weight * Math.min(1, brush.strength / 2) * opacity);
+        modified = true;
+      }
+      if (biomeActive) {
+        paintBiomeTexel(preview, index, biomeChannel, weight * 0.55 * opacity);
+        modified = true;
+      }
+      if (topologyActive && maskActive) {
+        preview.topology[index] = (preview.topology[index] | topologySet) & ~topologyClear;
+        modified = true;
+      }
+      if (alphaActive && maskActive) {
+        preview.alpha[index] = Math.min(preview.alpha[index], Math.round(255 * (1 - weight)));
+        modified = true;
+      }
+    }
+  }
+
+  if (modified && heightActive) {
+    preview.minHeight = Number.POSITIVE_INFINITY;
+    preview.maxHeight = Number.NEGATIVE_INFINITY;
+    for (let index = 0; index < preview.heights.length; index += 1) {
+      preview.minHeight = Math.min(preview.minHeight, preview.heights[index]);
+      preview.maxHeight = Math.max(preview.maxHeight, preview.heights[index]);
+    }
+  }
+  return modified;
+}
+
+export function brushSnapshot(brush: TerrainBrush): BrushInput {
+  return {
+    mode: brush.mode,
+    radius: brush.radius,
+    strength: brush.strength,
+    falloff: brush.falloff,
+    splatChannel: brush.splatChannel,
+    biomeChannel: brush.biomeChannel,
+    topologyFlags: [...brush.topologyFlags],
+    topologyClearFlags: [...brush.topologyClearFlags],
+    sync: { ...brush.sync },
+  };
+}
+
 export function applyBrushToPreview(
   preview: TerrainPreview,
   settings: TerrainSettings,
   worldX: number,
   worldZ: number,
 ): boolean {
-  const brush = settings.brush;
-  const resolution = preview.resolution;
-  const texel = settings.sizeMetres / (resolution - 1);
-  const [centreX, centreZ] = worldToGrid(worldX, worldZ, settings.sizeMetres, resolution);
-  const radius = Math.max(1, Math.ceil(brush.radius / texel));
-  const x0 = Math.max(0, Math.floor(centreX - radius));
-  const x1 = Math.min(resolution - 1, Math.ceil(centreX + radius));
-  const z0 = Math.max(0, Math.floor(centreZ - radius));
-  const z1 = Math.min(resolution - 1, Math.ceil(centreZ + radius));
-  let modified = false;
+  // Live stamping uses the active layer's opacity so the drag matches replay.
+  const opacity = clampOpacity(activeLayer(settings)?.opacity);
+  return stampBrush(
+    preview,
+    settings.sizeMetres,
+    worldX,
+    worldZ,
+    brushSnapshot(settings.brush),
+    opacity,
+  );
+}
 
-  for (let z = z0; z <= z1; z += 1) {
-    for (let x = x0; x <= x1; x += 1) {
-      const worldGridX = (x / (resolution - 1)) * settings.sizeMetres - settings.sizeMetres / 2;
-      const worldGridZ = (z / (resolution - 1)) * settings.sizeMetres - settings.sizeMetres / 2;
-      const distance = Math.hypot(worldGridX - worldX, worldGridZ - worldZ);
-      if (distance > brush.radius) continue;
-      const weight = Math.pow(1 - distance / brush.radius, Math.max(0.5, brush.falloff));
-      const index = z * resolution + x;
+const BIOME_INDEX: Record<BiomeChannel, number> = {
+  arid: 0,
+  temperate: 1,
+  tundra: 2,
+  arctic: 3,
+};
 
-      switch (brush.mode) {
-        case "raise":
-          preview.heights[index] += brush.strength * weight;
-          modified = true;
-          break;
-        case "lower":
-          preview.heights[index] -= brush.strength * weight;
-          modified = true;
-          break;
-        case "smooth": {
-          const neighbours = [
-            preview.heights[index - 1] ?? preview.heights[index],
-            preview.heights[index + 1] ?? preview.heights[index],
-            preview.heights[index - resolution] ?? preview.heights[index],
-            preview.heights[index + resolution] ?? preview.heights[index],
-          ];
-          const average = neighbours.reduce((sum, value) => sum + value, 0) / neighbours.length;
-          preview.heights[index] += (average - preview.heights[index]) * Math.min(1, weight);
-          modified = true;
-          break;
-        }
-        case "flatten": {
-          const target = preview.heights[index];
-          preview.heights[index] += (target - preview.heights[index]) * Math.min(1, weight);
-          break;
-        }
-        case "splat": {
-          const channel = SPLAT_INDEX[brush.splatChannel] ?? 4;
-          const offset = index * 8;
-          let total = 0;
-          for (let c = 0; c < 8; c += 1) total += preview.splat[offset + c];
-          const current = preview.splat[offset + channel];
-          preview.splat[offset + channel] = Math.min(255, current + (255 - current) * weight);
-          const newTotal = total + preview.splat[offset + channel] - current || 1;
-          for (let c = 0; c < 8; c += 1) {
-            preview.splat[offset + c] = Math.round((preview.splat[offset + c] * 255) / newTotal);
-          }
-          modified = true;
-          break;
-        }
-        case "alpha":
-          preview.alpha[index] = 0;
-          modified = true;
-          break;
-        case "topology": {
-          let mask = 0;
-          for (const flag of brush.topologyFlags) mask |= TOPOLOGY_BITS[flag] ?? 0;
-          preview.topology[index] |= mask;
-          modified = true;
-          break;
-        }
-      }
-    }
+const PREFAB_SPLAT_PROFILE: { match: RegExp; splat: SplatChannel; biome: BiomeChannel }[] = [
+  { match: /monument|launch|airfield|military|bandit|outpost|dome|village/i, splat: "gravel", biome: "temperate" },
+  { match: /tree|forest|bush|oak|pine|foliage/i, splat: "forest", biome: "temperate" },
+  { match: /rock|cliff|stone|ore|boulder/i, splat: "stones", biome: "tundra" },
+  { match: /sand|beach|desert|dune/i, splat: "sand", biome: "arid" },
+  { match: /snow|ice|arctic/i, splat: "snow", biome: "arctic" },
+  { match: /road|path|rail|foundation|building|wall|floor/i, splat: "gravel", biome: "temperate" },
+  { match: /car|vehicle|boat|heli|chinook/i, splat: "dirt", biome: "temperate" },
+];
+
+function topologyMask(flags: TopologyFlag[]): number {
+  return flags.reduce((mask, flag) => mask | (TOPOLOGY_BITS[flag] ?? 0), 0);
+}
+
+function paintSplatTexel(preview: TerrainPreview, index: number, channel: number, weight: number): void {
+  if (weight <= 0) return;
+  const offset = index * 8;
+  const current = preview.splat[offset + channel];
+  preview.splat[offset + channel] = Math.min(255, Math.round(current + (255 - current) * Math.min(1, weight)));
+  let total = 0;
+  for (let other = 0; other < 8; other += 1) total += preview.splat[offset + other];
+  if (total <= 0) {
+    preview.splat[offset + channel] = 255;
+    return;
   }
-
-  if (modified && (brush.mode === "raise" || brush.mode === "lower" || brush.mode === "smooth")) {
-    preview.minHeight = Number.POSITIVE_INFINITY;
-    preview.maxHeight = Number.NEGATIVE_INFINITY;
-    for (let i = 0; i < preview.heights.length; i += 1) {
-      preview.minHeight = Math.min(preview.minHeight, preview.heights[i]);
-      preview.maxHeight = Math.max(preview.maxHeight, preview.heights[i]);
-    }
+  for (let other = 0; other < 8; other += 1) {
+    preview.splat[offset + other] = Math.min(255, Math.round((preview.splat[offset + other] * 255) / total));
   }
-  return modified;
+}
+
+function paintBiomeTexel(preview: TerrainPreview, index: number, channel: number, weight: number): void {
+  if (weight <= 0) return;
+  for (let other = 0; other < 4; other += 1) {
+    const offset = index * 4 + other;
+    const value = preview.biome[offset];
+    preview.biome[offset] =
+      other === channel
+        ? Math.min(255, Math.round(value + (255 - value) * Math.min(1, weight)))
+        : Math.max(0, Math.round(value * (1 - weight * 0.85)));
+  }
 }
 
 export const SPLAT_INDEX: Record<string, number> = {

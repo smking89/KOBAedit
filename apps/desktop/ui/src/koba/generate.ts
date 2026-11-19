@@ -11,6 +11,7 @@ import type {
   LootSettings,
   MaterialLayer,
   PrefabPlacement,
+  PrefabAsset,
   ProjectKind,
   RouteSpline,
   SplineKind,
@@ -18,6 +19,7 @@ import type {
   WizardDraft,
 } from "../wizard/types";
 import type { ImageProfile, KobaAttachment, KobaGeneration } from "./types";
+import { runDeterministicCommand } from "./commands";
 
 const COLOR_WORDS: { words: string[]; hex: string; label: string }[] = [
   { words: ["crimson", "blood red"], hex: "#7f1d1d", label: "Crimson" },
@@ -102,7 +104,29 @@ function withDefaults(input?: Partial<WizardDraft>): WizardDraft {
     terrain: {
       ...base.terrain,
       ...(input.terrain ?? {}),
-      brush: { ...base.terrain.brush, ...(input.terrain?.brush ?? {}) },
+      brush: {
+        ...base.terrain.brush,
+        ...(input.terrain?.brush ?? {}),
+        sync: { ...base.terrain.brush.sync, ...(input.terrain?.brush?.sync ?? {}) },
+        topologyClearFlags:
+          input.terrain?.brush?.topologyClearFlags ?? base.terrain.brush.topologyClearFlags,
+      },
+      strokes: input.terrain?.strokes ?? [],
+      slopeTopology: input.terrain?.slopeTopology ?? [],
+      masks: input.terrain?.masks ?? [],
+    },
+    splines: (input.splines ?? []).map((spline) => ({
+      ...spline,
+      curve: spline.curve ?? "catmull-rom",
+      tension: spline.tension ?? 0.5,
+      deformTerrain: spline.deformTerrain ?? true,
+      paintSplat: spline.paintSplat ?? true,
+      topologyFlag: spline.topologyFlag ?? null,
+    })),
+    io: {
+      nodes: input.io?.nodes ?? [],
+      links: input.io?.links ?? [],
+      vendingOverrides: input.io?.vendingOverrides ?? [],
     },
     loot: { ...base.loot, ...(input.loot ?? {}) },
     skin: {
@@ -175,6 +199,13 @@ function quotedName(text: string): string | null {
 function colorMentions(text: string): { hex: string; label: string; at: number }[] {
   const lower = text.toLowerCase();
   const found: { hex: string; label: string; at: number }[] = [];
+  for (const match of text.matchAll(/#([0-9a-f]{6})\b/gi)) {
+    found.push({
+      hex: `#${match[1].toUpperCase()}`,
+      label: `#${match[1].toUpperCase()}`,
+      at: match.index ?? 0,
+    });
+  }
   for (const entry of COLOR_WORDS) {
     for (const word of entry.words) {
       const at = lower.indexOf(word);
@@ -203,6 +234,7 @@ function pickMesh(text: string, base: WizardDraft): BaseMeshAsset {
     { pattern: /\b(bolt|sniper|bolty)\b/i, index: 2 },
     { pattern: /\b(chest|plate|armor|armour)\b/i, index: 3 },
     { pattern: /\b(hoodie|jacket|clothing|shirt)\b/i, index: 4 },
+    { pattern: /\b(receiver|rifle|gun|weapon)\b/i, index: 0 },
     { pattern: /\b(door)\b/i, index: 5 },
     { pattern: /\b(cupboard|tc)\b/i, index: 6 },
   ];
@@ -434,6 +466,11 @@ function generateWorld(
     step: "validate",
     name,
     summary: lines,
+    chips: [
+      { label: `${placements.length} prefabs`, prompt: `generate ${size / 1000}k ${preset} with ${placements.length} monuments` },
+      { label: `${splines.length} routes`, prompt: `generate ${size / 1000}k ${preset} with ${Math.max(1, splines.length)} roads` },
+      { label: `Tier ${loot.tier}`, prompt: `generate ${size / 1000}k ${preset} with tier ${loot.tier} loot` },
+    ],
   };
 }
 
@@ -555,6 +592,11 @@ function generateSkin(
     step: "workshop",
     name,
     summary: lines,
+    chips: [
+      { label: primary, prompt: `apply ${primary} base with ${accent} trim on ${mesh.name.toLowerCase()}` },
+      { label: `${Math.round(wearLevel * 100)}% wear`, prompt: `set wear ${wearLevel.toFixed(2)}` },
+      { label: resolution === 1024 ? "1K" : "2K", prompt: `apply ${style} finish at ${resolution}` },
+    ],
   };
 }
 
@@ -562,8 +604,11 @@ export function generateProject(
   prompt: string,
   attachments: KobaAttachment[],
   current: WizardDraft,
+  catalog: PrefabAsset[] = [],
 ): KobaGeneration {
   const text = prompt.trim() || "Build a balanced Rust project from the attached references.";
+  const command = runDeterministicCommand(text, current, catalog);
+  if (command) return command;
   const archiveDraft = attachments.find((attachment) => attachment.zip?.projectDraft)?.zip?.projectDraft;
   const kind = detectKind(text, archiveDraft?.projectKind ?? current.projectKind);
   const usableDraft = archiveDraft?.projectKind === kind ? archiveDraft : undefined;

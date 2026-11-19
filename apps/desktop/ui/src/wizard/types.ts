@@ -17,6 +17,7 @@ export type WizardStepId = WorldStepId | SkinStepId;
 export type TerrainPreset = "islands" | "mountains" | "valley" | "flat" | "archipelago";
 
 export type BrushMode = "raise" | "lower" | "smooth" | "flatten" | "splat" | "topology" | "alpha";
+export type BrushLayer = "height" | "splat" | "biome" | "topology" | "alpha";
 export type SplatChannel = "dirt" | "snow" | "sand" | "rock" | "grass" | "forest" | "stones" | "gravel";
 export type BiomeChannel = "arid" | "temperate" | "tundra" | "arctic";
 export type TopologyFlag =
@@ -28,6 +29,14 @@ export type TopologyFlag =
   | "npc_zone"
   | "safe_zone";
 
+export interface BrushSync {
+  height: boolean;
+  splat: boolean;
+  biome: boolean;
+  topology: boolean;
+  alpha: boolean;
+}
+
 export interface TerrainBrush {
   mode: BrushMode;
   radius: number;
@@ -36,6 +45,69 @@ export interface TerrainBrush {
   splatChannel: SplatChannel;
   biomeChannel: BiomeChannel;
   topologyFlags: TopologyFlag[];
+  topologyClearFlags: TopologyFlag[];
+  sync: BrushSync;
+}
+
+export interface SlopeTopologyRule {
+  id: string;
+  minSlope: number;
+  maxSlope: number;
+  flags: TopologyFlag[];
+}
+
+export type TerrainLayerKind = "sculpt" | "splat" | "biome" | "topology";
+
+/**
+ * Strokes are captured into layers. Layers replay in array order; hidden or
+ * zero-opacity layers are skipped by the editor preview and the exporter.
+ */
+export interface TerrainLayer {
+  id: string;
+  name: string;
+  kind: TerrainLayerKind;
+  visible: boolean;
+  /** 0–1 effect multiplier applied on replay. */
+  opacity: number;
+  strokes: TerrainStroke[];
+}
+
+export interface TerrainStroke {
+  id: string;
+  x: number;
+  z: number;
+  /** Layer this stroke was captured into (absent on pre-layer projects). */
+  layerId?: string;
+  mode: BrushMode;
+  radius: number;
+  strength: number;
+  falloff: number;
+  splatChannel: SplatChannel;
+  biomeChannel: BiomeChannel;
+  topologyFlags: TopologyFlag[];
+  topologyClearFlags: TopologyFlag[];
+  sync: BrushSync;
+}
+
+export interface TerrainHeightImport {
+  name: string;
+  resolution: number;
+  encoding: "raw16" | "png16";
+  /** Base64 little-endian uint16 heights, row-major. */
+  data: string;
+  minHeight: number;
+  maxHeight: number;
+  verticalScale: number;
+}
+
+export interface TerrainMaskImport {
+  id: string;
+  name: string;
+  kind: "splat" | "biome" | "topology" | "alpha";
+  channel: number;
+  resolution: number;
+  /** Base64 single-channel 8-bit mask, row-major. */
+  data: string;
 }
 
 export interface TerrainSettings {
@@ -49,6 +121,23 @@ export interface TerrainSettings {
   biomeWeights: [number, number, number, number];
   brush: TerrainBrush;
   sculptStrokes: number;
+  /** Legacy flat history; new strokes live in `layers`. */
+  strokes: TerrainStroke[];
+  layers: TerrainLayer[];
+  activeLayerId: string | null;
+  slopeTopology: SlopeTopologyRule[];
+  heightmap?: TerrainHeightImport;
+  masks: TerrainMaskImport[];
+  /**
+   * Flat starting floor. When set the generator writes this height everywhere
+   * instead of noise, which backs the ocean/sandbox map starters and the
+   * monument testing stage.
+   */
+  floorHeight?: number;
+  /** Ground channel painted across the whole floor instead of height mixes. */
+  floorSplat?: SplatChannel;
+  /** Biome channel blended across the whole floor. */
+  floorBiome?: BiomeChannel;
 }
 
 export interface Bounds3 {
@@ -82,6 +171,10 @@ export interface PrefabPlacement {
   rotationEuler: Vec3;
   scale: Vec3;
   parentId: string | null;
+  /** Horizontal collision half-extent in metres, before placement scale. */
+  collisionRadius: number;
+  /** Collision box height in metres, before placement scale. */
+  collisionHeight: number;
   flatten: boolean;
   flattenRadius: number;
   flattenFalloff: number;
@@ -94,7 +187,17 @@ export interface PrefabPlacement {
   locked: boolean;
 }
 
-export type SplineKind = "road" | "river" | "rail" | "apc" | "cargo" | "powerline";
+export type SplineKind =
+  | "road"
+  | "river"
+  | "rail"
+  | "apc"
+  | "cargo"
+  | "chinook"
+  | "powerline"
+  /** Underground tunnel path; carves surface portals into the alpha mask. */
+  | "cave";
+export type SplineCurve = "catmull-rom" | "bezier";
 
 export interface SplineNode {
   x: number;
@@ -109,7 +212,69 @@ export interface RouteSpline {
   width: number;
   closed: boolean;
   autoRoute: boolean;
+  curve: SplineCurve;
+  tension: number;
+  deformTerrain: boolean;
+  paintSplat: boolean;
+  topologyFlag: TopologyFlag | null;
   nodes: SplineNode[];
+  /** Cave/tunnel ceiling above the path, in metres. */
+  ceilingHeight?: number;
+  /** 0 = machined tunnel, 1 = very broken rock. Drives portal jitter. */
+  roughness?: number;
+  /** Segment preset: rock, mine shaft, sewer conduit or buildable chamber. */
+  cavePreset?: CavePresetId;
+}
+
+export type CavePresetId = "natural" | "mine" | "sewer" | "chamber";
+
+export type WeatherPreset = "clear" | "overcast" | "fog" | "dust";
+
+/** Viewport-only sun/weather state; it is saved with the project. */
+export interface LightingSettings {
+  /** Minutes after midnight (0–1439). */
+  timeOfDay: number;
+  weather: WeatherPreset;
+}
+
+export type IOComponentKind =
+  | "switch"
+  | "card_reader"
+  | "door"
+  | "generator"
+  | "timer"
+  | "light"
+  | "vending_machine";
+
+export interface IONode {
+  id: string;
+  name: string;
+  kind: IOComponentKind;
+  placementId: string | null;
+  x: number;
+  z: number;
+  cardLevel: "green" | "blue" | "red" | null;
+}
+
+export interface IOLink {
+  id: string;
+  from: string;
+  to: string;
+  cardLevel: "green" | "blue" | "red" | null;
+}
+
+export interface VendingOverride {
+  id: string;
+  placementId: string;
+  profile: string;
+  stock: number;
+  priceMultiplier: number;
+}
+
+export interface IOGraph {
+  nodes: IONode[];
+  links: IOLink[];
+  vendingOverrides: VendingOverride[];
 }
 
 export interface LootSettings {
@@ -184,16 +349,21 @@ export interface ExportSettings {
 }
 
 export interface WizardDraft {
+  /** Stable id used as the sync entity id; survives project renames. */
+  projectId: string;
   name: string;
   mode: EntryMode;
   projectKind: ProjectKind;
   branch: Branch;
   syncEndpoint: string;
   studioMode: boolean;
+  walkMode: boolean;
+  lighting: LightingSettings;
   terrain: TerrainSettings;
   placements: PrefabPlacement[];
   selectedPlacementId: string | null;
   splines: RouteSpline[];
+  io: IOGraph;
   loot: LootSettings;
   skin: SkinSettings;
   export: ExportSettings;

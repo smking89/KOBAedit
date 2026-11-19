@@ -7,10 +7,17 @@
  * blocking issues, so the UI cannot get into an invalid exported state.
  */
 
+import { collisionExtents } from "../lib/collision";
+import { connectorTarget } from "../lib/splineMath";
+import { createLayer, layerKindForStroke, plannedStrokes } from "../lib/layers";
 import type {
   Bounds3,
   Branch,
   DecalStroke,
+  LightingSettings,
+  IOComponentKind,
+  IOLink,
+  IONode,
   LootSettings,
   MaterialLayer,
   PrefabAsset,
@@ -20,8 +27,12 @@ import type {
   SkinSettings,
   SkinStepId,
   SplineKind,
+  TerrainLayer,
+  TerrainLayerKind,
   TerrainSettings,
+  TerrainStroke,
   ValidationIssue,
+  VendingOverride,
   WizardDraft,
   WizardState,
   WizardStepId,
@@ -173,14 +184,33 @@ export function stepsFor(kind: ProjectKind): WizardStepId[] {
   return kind === "skin" ? SKIN_STEPS : WORLD_STEPS;
 }
 
+export function collisionFromBounds(bounds: Bounds3 | null | undefined): {
+  radius: number;
+  height: number;
+} {
+  if (!bounds) return { radius: 12, height: 8 };
+  const width = Math.abs(bounds.max[0] - bounds.min[0]);
+  const depth = Math.abs(bounds.max[2] - bounds.min[2]);
+  const height = Math.abs(bounds.max[1] - bounds.min[1]);
+  return {
+    radius: Number.isFinite(width) && Number.isFinite(depth)
+      ? Math.max(2, Math.round(Math.max(width, depth) / 2))
+      : 12,
+    height: Number.isFinite(height) ? Math.max(2, Math.round(height)) : 8,
+  };
+}
+
 export function createInitialDraft(): WizardDraft {
   return {
+    projectId: uid("project"),
     name: "Untitled project",
     mode: "offline",
     projectKind: "map",
     branch: "world",
     syncEndpoint: "",
     studioMode: false,
+    walkMode: false,
+    lighting: { timeOfDay: 10 * 60 + 30, weather: "clear" },
     terrain: {
       seed: 1337,
       preset: "islands",
@@ -198,12 +228,20 @@ export function createInitialDraft(): WizardDraft {
         splatChannel: "grass",
         biomeChannel: "temperate",
         topologyFlags: ["no_build"],
+        topologyClearFlags: ["foliage_cleared"],
+        sync: { height: false, splat: false, biome: false, topology: false, alpha: false },
       },
       sculptStrokes: 0,
+      strokes: [],
+      layers: [],
+      activeLayerId: null,
+      slopeTopology: [],
+      masks: [],
     },
     placements: [],
     selectedPlacementId: null,
     splines: [],
+    io: { nodes: [], links: [], vendingOverrides: [] },
     loot: {
       tier: 2,
       crateCount: 24,
@@ -273,21 +311,32 @@ export function flattenRadiusFromBounds(
   return Math.max(8, Math.round(footprint * 0.55 + 4));
 }
 
-export function createPlacement(asset: PrefabAsset, index = 0): PrefabPlacement {
+export function createPlacement(
+  asset: PrefabAsset,
+  index = 0,
+  at?: { x: number; z: number },
+): PrefabPlacement {
   const angle = (index % 8) * (Math.PI / 4);
   const radius = Math.min(400, 90 + index * 18);
+  const collision = collisionFromBounds(asset.bounds);
   return {
     id: uid("prefab"),
     assetId: asset.id,
     name: asset.name,
-    position: {
-      x: Math.round(Math.cos(angle) * radius),
-      y: 0,
-      z: Math.round(Math.sin(angle) * radius),
-    },
+    // Dropping on the terrain supplies the world position; the spiral is only a
+    // fallback for adding from a list button.
+    position: at
+      ? { x: Math.round(at.x), y: 0, z: Math.round(at.z) }
+      : {
+          x: Math.round(Math.cos(angle) * radius),
+          y: 0,
+          z: Math.round(Math.sin(angle) * radius),
+        },
     rotationEuler: { x: 0, y: 0, z: 0 },
     scale: { x: 1, y: 1, z: 1 },
     parentId: null,
+    collisionRadius: collision.radius,
+    collisionHeight: collision.height,
     flatten: true,
     flattenRadius: asset.flattenRadius || flattenRadiusFromBounds(asset.bounds),
     flattenFalloff: 18,
@@ -308,22 +357,153 @@ export function createSpline(kind: SplineKind, index: number): RouteSpline {
     rail: "Rail",
     apc: "APC Route",
     cargo: "Cargo Route",
+    chinook: "Chinook Route",
     powerline: "Powerline",
+    cave: "Cave Tunnel",
   };
   const offset = index * 120;
+  const cave = kind === "cave";
   return {
     id: uid("spline"),
     name: `${names[kind]} ${index}`,
     kind,
-    width: kind === "river" ? 22 : kind === "road" ? 9 : 6,
+    width: cave ? 4.5 : kind === "river" ? 22 : kind === "road" ? 9 : 6,
     closed: false,
-    autoRoute: true,
-    nodes: [
-      { x: -900 + offset, y: 0, z: -600 },
-      { x: -300 + offset, y: 0, z: 0 },
-      { x: 500 + offset, y: 0, z: 450 },
-      { x: 950, y: 0, z: 900 },
-    ],
+    autoRoute: !cave,
+    curve: "catmull-rom",
+    tension: 0.5,
+    deformTerrain: kind === "road" || kind === "river",
+    paintSplat: !cave,
+    topologyFlag: kind === "road" || kind === "rail" ? "path_clear" : null,
+    ceilingHeight: cave ? 4 : undefined,
+    roughness: cave ? 0.35 : undefined,
+    cavePreset: cave ? "natural" : undefined,
+    // Cave nodes carry an absolute tunnel elevation, so the default path dips
+    // under the surface and rises into a portal at the far end.
+    nodes: cave
+      ? [
+          { x: -700 + offset, y: -4, z: -500 },
+          { x: -200 + offset, y: -12, z: 0 },
+          { x: 400 + offset, y: -9, z: 480 },
+          { x: 880, y: 3, z: 880 },
+        ]
+      : [
+          { x: -900 + offset, y: 0, z: -600 },
+          { x: -300 + offset, y: 0, z: 0 },
+          { x: 500 + offset, y: 0, z: 450 },
+          { x: 950, y: 0, z: 900 },
+        ],
+  };
+}
+
+/**
+ * A road from a prefab entrance to the closest existing road node (or the
+ * nearest map edge when no road exists yet). The spline carries the same
+ * corridor deformation and gravel paint the Paths step uses, so the connector
+ * is flattened and textured without extra work.
+ */
+export const CONNECTOR_PREFIX = "Road to ";
+
+export function createConnectorSpline(
+  placement: PrefabPlacement,
+  splines: RouteSpline[],
+  index: number,
+  sizeMetres: number,
+): RouteSpline | null {
+  const inset = Math.max(4, sizeMetres / 2 - 40);
+  const clearance = Math.max(12, placement.collisionRadius, placement.flattenRadius * 0.6);
+  // Only ordinary roads are targets: rivers, rails, route splines and the
+  // connectors generated for other prefabs are not a road network, and
+  // chaining onto another connector produced roads that join mid-stub.
+  const roads = splines.filter(
+    (spline) => spline.kind === "road" && !spline.name.startsWith(CONNECTOR_PREFIX),
+  );
+  const target = connectorTarget(roads, placement.position, clearance, inset);
+  // Already touching the road, or no usable target: no stub is needed.
+  if (!target) return null;
+
+  const dx = target.x - placement.position.x;
+  const dz = target.z - placement.position.z;
+  const length = Math.hypot(dx, dz) || 1;
+  const ux = dx / length;
+  const uz = dz / length;
+  const start = {
+    x: placement.position.x + ux * clearance,
+    z: placement.position.z + uz * clearance,
+  };
+  // Pressing the button twice must not stack two identical stubs.
+  const existing = splines.find(
+    (spline) => spline.kind === "road" && spline.name === `${CONNECTOR_PREFIX}${placement.name}`,
+  );
+  const existingEnd = existing?.nodes[existing.nodes.length - 1];
+  if (existingEnd && Math.hypot(existingEnd.x - target.x, existingEnd.z - target.z) < 2) {
+    return null;
+  }
+  const bow = Math.min(50, Math.max(6, length * 0.1));
+  const middle = {
+    x: (start.x + target.x) / 2 - uz * bow,
+    z: (start.z + target.z) / 2 + ux * bow,
+  };
+  const spline = createSpline("road", index);
+  return {
+    ...spline,
+    name: `${CONNECTOR_PREFIX}${placement.name}`,
+    width: 8,
+    deformTerrain: true,
+    paintSplat: true,
+    topologyFlag: "path_clear",
+    nodes: [start, middle, target].map((point) => ({
+      x: Math.round(point.x),
+      y: 0,
+      z: Math.round(point.z),
+    })),
+  };
+}
+
+export function createStroke(
+  x: number,
+  z: number,
+  brush: Omit<TerrainStroke, "id" | "x" | "z">,
+): TerrainStroke {
+  return { ...brush, id: uid("stroke"), x, z };
+}
+
+export function createIONode(
+  kind: IOComponentKind,
+  index: number,
+  placement?: PrefabPlacement,
+): IONode {
+  const labels: Record<IOComponentKind, string> = {
+    switch: "Switch",
+    card_reader: "Card reader",
+    door: "Door",
+    generator: "Generator",
+    timer: "Timer",
+    light: "Light",
+    vending_machine: "Vending machine",
+  };
+  return {
+    id: uid("io"),
+    name: `${labels[kind]} ${index + 1}`,
+    kind,
+    placementId: placement?.id ?? null,
+    x: placement?.position.x ?? 0,
+    z: placement?.position.z ?? 12 * index,
+    cardLevel: kind === "card_reader" ? "green" : null,
+  };
+}
+
+export function createIOLink(from: string, to: string, cardLevel: IOLink["cardLevel"] = null): IOLink {
+  return { id: uid("link"), from, to, cardLevel };
+}
+
+export function createVendingOverride(placementId: string, index: number): VendingOverride {
+  return {
+    id: uid("vending"),
+    placementId,
+    profile: index % 2 === 0 ? "bandit" : "outpost",
+    stock: 12,
+    priceMultiplier: 1,
   };
 }
 
@@ -382,6 +562,19 @@ export function validateDraft(draft: WizardDraft): ValidationIssue[] {
     if (terrain.waterLevel > 450) {
       add("terrain-water", "terrain", "warning", "Water level above 450 m will flood most terrain.");
     }
+    if (
+      terrain.heightmap &&
+      terrain.heightmap.resolution >= 1025 &&
+      terrain.sizeMetres !== terrain.heightmap.resolution - 1
+    ) {
+      add(
+        "heightmap-native-size",
+        "terrain",
+        "warning",
+        `The native ${terrain.heightmap.resolution}² heightmap exports as a ${terrain.heightmap.resolution - 1} m map, not ${terrain.sizeMetres} m.`,
+        "Re-import the heightmap or set the map size back to resolution − 1 to keep validation and the exported grid aligned.",
+      );
+    }
 
     const triangles = draft.placements.reduce((total, placement) => total + 1, 0);
     if (draft.projectKind === "monument" && triangles === 0) {
@@ -391,6 +584,7 @@ export function validateDraft(draft: WizardDraft): ValidationIssue[] {
       add("map-empty", "monuments", "warning", "No monuments or prefabs placed yet.");
     }
 
+    const halfSize = terrain.sizeMetres / 2;
     let previous = "";
     const sorted = [...draft.placements].sort((a, b) => a.name.localeCompare(b.name));
     for (const placement of sorted) {
@@ -404,6 +598,71 @@ export function validateDraft(draft: WizardDraft): ValidationIssue[] {
         );
       }
       previous = placement.name;
+      // Scale and yaw apply to the rendered proxy, so they must apply here
+      // too; otherwise a scaled-up prefab passes validation with a footprint
+      // that is larger than the one drawn in the viewport.
+      const extents = collisionExtents(placement);
+      if (
+        Math.abs(placement.position.x) + extents.halfX > halfSize ||
+        Math.abs(placement.position.z) + extents.halfZ > halfSize
+      ) {
+        add(
+          `edge-${placement.id}`,
+          "monuments",
+          "error",
+          `"${placement.name}" extends beyond the ${terrain.sizeMetres} m map edge.`,
+          "Move it inward or reduce its collision radius or scale before exporting.",
+        );
+      }
+      if (placement.scale.x <= 0 || placement.scale.y <= 0 || placement.scale.z <= 0) {
+        add(
+          `scale-${placement.id}`,
+          "monuments",
+          "error",
+          `"${placement.name}" has a zero or negative scale.`,
+        );
+      }
+      if (placement.position.y > 25) {
+        add(
+          `float-${placement.id}`,
+          "validate",
+          "warning",
+          `"${placement.name}" is ${Math.round(placement.position.y)} m above its terrain pad.`,
+          "Check for a floating prefab before writing the .map.",
+        );
+      }
+      const monumentLike = /monument|launch|airfield|military|bandit|outpost|dome|village/i.test(
+        `${placement.assetId} ${placement.name}`,
+      );
+      if (monumentLike && placement.flatten && !placement.noBuildZone) {
+        add(
+          `missing-nobuild-${placement.id}`,
+          "validate",
+          "warning",
+          `"${placement.name}" has no Prevent Building topology mask.`,
+          "Monuments normally need the no-build flag inside the flattened footprint.",
+        );
+      }
+      if (monumentLike && !placement.clearFoliage) {
+        add(
+          `missing-foliage-${placement.id}`,
+          "validate",
+          "warning",
+          `"${placement.name}" does not clear foliage in the topology layer.`,
+        );
+      }
+      if (placement.ioWiring.includes("->")) {
+        const [source, target] = placement.ioWiring.split("->").map((part) => part.trim());
+        if (!source || !target) {
+          add(
+            `io-broken-${placement.id}`,
+            "validate",
+            "error",
+            `"${placement.name}" has an incomplete IO connection.`,
+            "Use the form source -> target.",
+          );
+        }
+      }
       if (placement.flatten && placement.flattenFalloff < 4) {
         add(
           `falloff-${placement.id}`,
@@ -415,6 +674,90 @@ export function validateDraft(draft: WizardDraft): ValidationIssue[] {
       }
     }
 
+    for (let first = 0; first < sorted.length; first += 1) {
+      for (let second = first + 1; second < sorted.length; second += 1) {
+        const a = sorted[first];
+        const b = sorted[second];
+        if (a.locked || b.locked) continue;
+        const distance = Math.hypot(a.position.x - b.position.x, a.position.z - b.position.z);
+        const required = Math.max(2, collisionExtents(a).reach) + Math.max(2, collisionExtents(b).reach);
+        if (distance + 0.01 < required) {
+          add(
+            `collision-${a.id}-${b.id}`,
+            "monuments",
+            "warning",
+            `Collision volumes for "${a.name}" and "${b.name}" overlap by ${Math.round(required - distance)} m.`,
+            "Move one prefab or reduce its collision radius so placement validation matches the rendered proxy.",
+          );
+        }
+      }
+    }
+
+    // Map health: pad stacking, prefab budget and spawn topology.
+    const padPairs: string[] = [];
+    for (let first = 0; first < sorted.length; first += 1) {
+      for (let second = first + 1; second < sorted.length; second += 1) {
+        const a = sorted[first];
+        const b = sorted[second];
+        if (!a.flatten || !b.flatten) continue;
+        const distance = Math.hypot(a.position.x - b.position.x, a.position.z - b.position.z);
+        // Half-overlap is the point where one pad starts re-flattening the
+        // other and the blend rings stack visibly.
+        const threshold = (a.flattenRadius + b.flattenRadius) * 0.5;
+        if (distance > 0 && distance < threshold && padPairs.length < 3) {
+          padPairs.push(`${a.name} / ${b.name}`);
+        }
+      }
+    }
+    for (const pair of padPairs) {
+      add(
+        `pad-overlap-${pair}`,
+        "validate",
+        "warning",
+        `Flatten pads of ${pair} overlap by more than half.`,
+        "Stacked pads fight over the same terrain and can leave a visible seam ring.",
+      );
+    }
+
+    if (sorted.length > 150) {
+      add(
+        "prefab-budget",
+        "validate",
+        "warning",
+        `${sorted.length} prefabs on one map is above the draw-call budget.`,
+        "Merge repeated decor into fewer prefabs or reuse them with transforms so lower-end clients keep their frame rate.",
+      );
+    }
+    const padArea = sorted.reduce(
+      (total, placement) =>
+        total + Math.PI * Math.max(0, placement.flattenRadius) * Math.max(0, placement.flattenRadius),
+      0,
+    );
+    const padCoverage = padArea / Math.max(1, terrain.sizeMetres * terrain.sizeMetres);
+    if (padCoverage > 0.4) {
+      add(
+        "pad-coverage",
+        "validate",
+        "warning",
+        `Flatten pads cover ${Math.round(padCoverage * 100)}% of the map.`,
+        "That much flattened ground removes the natural terrain the map is judged on.",
+      );
+    }
+    const floorHeight = terrain.floorHeight;
+    if (
+      draft.projectKind === "map" &&
+      typeof floorHeight === "number" &&
+      floorHeight > terrain.waterLevel
+    ) {
+      add(
+        "no-water",
+        "validate",
+        "warning",
+        "This map has no water, so it has no beach or oceanside spawn area.",
+        "Rust places spawns on coastal topology; a dry flat map can drop players into the ocean. Add a coast or lower the floor below the water line.",
+      );
+    }
+
     if (draft.projectKind === "map" && draft.splines.length === 0) {
       add("no-paths", "paths", "warning", "No roads or rivers yet. Rust maps normally include both.");
     }
@@ -424,6 +767,78 @@ export function validateDraft(draft: WizardDraft): ValidationIssue[] {
       }
       if (spline.width <= 0) {
         add(`width-${spline.id}`, "paths", "error", `"${spline.name}" needs a positive width.`);
+      }
+      const outside = spline.nodes.some(
+        (node) => Math.abs(node.x) > halfSize || Math.abs(node.z) > halfSize,
+      );
+      if (outside) {
+        add(
+          `spline-edge-${spline.id}`,
+          "paths",
+          "warning",
+          `"${spline.name}" has nodes outside the map bounds.`,
+        );
+      }
+      if ((spline.kind === "road" || spline.kind === "rail") && !spline.topologyFlag) {
+        add(
+          `spline-topology-${spline.id}`,
+          "validate",
+          "info",
+          `"${spline.name}" does not stamp a path-clear topology flag.`,
+        );
+      }
+    }
+
+    const nodeIds = new Set(draft.io.nodes.map((node) => node.id));
+    for (const link of draft.io.links) {
+      if (!nodeIds.has(link.from) || !nodeIds.has(link.to)) {
+        add(
+          `io-link-${link.id}`,
+          "validate",
+          "error",
+          "An IO link references a component that no longer exists.",
+          "Delete the dangling wire and reconnect the nodes.",
+        );
+      }
+    }
+    for (const node of draft.io.nodes) {
+      if (node.placementId && !draft.placements.some((item) => item.id === node.placementId)) {
+        add(
+          `io-node-${node.id}`,
+          "validate",
+          "warning",
+          `IO component "${node.name}" is not attached to a placed prefab.`,
+        );
+      }
+      if (node.kind === "card_reader" && !draft.io.links.some((link) => link.from === node.id)) {
+        add(
+          `io-reader-${node.id}`,
+          "validate",
+          "warning",
+          `Card reader "${node.name}" is not wired to a door or generator.`,
+        );
+      }
+    }
+    if (draft.io.links.some((link) => link.from === link.to)) {
+      add("io-loop", "validate", "error", "An IO component is wired to itself.");
+    }
+
+    const alphaStrokes = plannedStrokes(terrain).filter((entry) => entry.stroke.mode === "alpha");
+    if (alphaStrokes.length > 0) {
+      add(
+        "terrain-holes",
+        "validate",
+        "warning",
+        `${alphaStrokes.length} alpha hole stroke(s) will create non-watertight terrain.`,
+        "Verify cave entrances have walls or a matching alpha mask before export.",
+      );
+    }
+    if (terrain.heightmap && terrain.heightmap.resolution < 2) {
+      add("heightmap-import", "terrain", "error", "Imported heightmap has no readable samples.");
+    }
+    for (const mask of terrain.masks ?? []) {
+      if (mask.resolution < 2) {
+        add(`mask-${mask.id}`, "terrain", "error", `Mask "${mask.name}" is empty.`);
       }
     }
 
@@ -508,13 +923,29 @@ type WizardAction =
   | { type: "patchSkin"; patch: Partial<SkinSettings> }
   | { type: "patchSkinWear"; patch: Partial<SkinSettings["wear"]> }
   | { type: "setKind"; kind: ProjectKind }
-  | { type: "addPlacement"; asset: PrefabAsset }
+  | { type: "addPlacement"; asset: PrefabAsset; position?: { x: number; z: number } }
+  | { type: "addPlacements"; placements: PrefabPlacement[] }
+  | { type: "connectPlacement"; placementId: string }
   | { type: "updatePlacement"; id: string; patch: Partial<PrefabPlacement> }
   | { type: "removePlacement"; id: string }
   | { type: "selectPlacement"; id: string | null }
   | { type: "addSpline"; kind: SplineKind }
   | { type: "updateSpline"; id: string; patch: Partial<RouteSpline> }
   | { type: "removeSpline"; id: string }
+  | { type: "addStrokes"; strokes: TerrainStroke[] }
+  | { type: "addLayer"; kind: TerrainLayerKind }
+  | { type: "removeLayer"; id: string }
+  | { type: "updateLayer"; id: string; patch: Partial<Omit<TerrainLayer, "id" | "strokes">> }
+  | { type: "moveLayer"; id: string; direction: -1 | 1 }
+  | { type: "setActiveLayer"; id: string | null }
+  | { type: "addIONode"; kind: IOComponentKind; placementId?: string | null }
+  | { type: "updateIONode"; id: string; patch: Partial<IONode> }
+  | { type: "removeIONode"; id: string }
+  | { type: "addIOLink"; from: string; to: string }
+  | { type: "removeIOLink"; id: string }
+  | { type: "addVendingOverride"; placementId: string }
+  | { type: "updateVendingOverride"; id: string; patch: Partial<VendingOverride> }
+  | { type: "removeVendingOverride"; id: string }
   | { type: "addMaterialLayer"; preset: MaterialLayer["preset"] }
   | { type: "updateMaterialLayer"; id: string; patch: Partial<MaterialLayer> }
   | { type: "removeMaterialLayer"; id: string }
@@ -522,6 +953,8 @@ type WizardAction =
   | { type: "removeDecal"; id: string }
   | { type: "registerPaintStroke" }
   | { type: "toggleStudio" }
+  | { type: "setWalkMode"; enabled: boolean }
+  | { type: "setLighting"; patch: Partial<LightingSettings> }
   | { type: "next" }
   | { type: "back" }
   | { type: "goTo"; step: WizardStepId }
@@ -566,11 +999,24 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
     }
 
     case "addPlacement": {
-      const placement = createPlacement(action.asset, state.draft.placements.length);
+      const placement = createPlacement(
+        action.asset,
+        state.draft.placements.length,
+        action.position,
+      );
       return markDirty(state, {
         ...state.draft,
         placements: [...state.draft.placements, placement],
         selectedPlacementId: placement.id,
+      });
+    }
+
+    case "addPlacements": {
+      if (!action.placements.length) return state;
+      return markDirty(state, {
+        ...state.draft,
+        placements: [...state.draft.placements, ...action.placements],
+        selectedPlacementId: action.placements[action.placements.length - 1]?.id ?? null,
       });
     }
 
@@ -593,6 +1039,19 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
     case "selectPlacement":
       return { ...state, draft: { ...state.draft, selectedPlacementId: action.id } };
 
+    case "connectPlacement": {
+      const placement = state.draft.placements.find((item) => item.id === action.placementId);
+      if (!placement) return state;
+      const spline = createConnectorSpline(
+        placement,
+        state.draft.splines,
+        state.draft.splines.length,
+        state.draft.terrain.sizeMetres,
+      );
+      if (!spline) return state;
+      return markDirty(state, { ...state.draft, splines: [...state.draft.splines, spline] });
+    }
+
     case "addSpline": {
       const spline = createSpline(action.kind, state.draft.splines.length);
       return markDirty(state, { ...state.draft, splines: [...state.draft.splines, spline] });
@@ -610,6 +1069,199 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       return markDirty(state, {
         ...state.draft,
         splines: state.draft.splines.filter((spline) => spline.id !== action.id),
+      });
+
+    case "addStrokes": {
+      if (!action.strokes.length) return state;
+      const terrain = state.draft.terrain;
+      let layers = terrain.layers ?? [];
+      let active = layers.find((layer) => layer.id === terrain.activeLayerId) ?? null;
+      if (!active) {
+        active = createLayer(layerKindForStroke(action.strokes[0]), layers.length);
+        layers = [...layers, active];
+      }
+      const targetId = active.id;
+      layers = layers.map((layer) =>
+        layer.id === targetId
+          ? {
+              ...layer,
+              strokes: [
+                ...layer.strokes,
+                ...action.strokes.map((stroke) => ({ ...stroke, layerId: targetId })),
+              ].slice(-20_000),
+            }
+          : layer,
+      );
+      return markDirty(state, {
+        ...state.draft,
+        terrain: {
+          ...terrain,
+          layers,
+          activeLayerId: targetId,
+          sculptStrokes: terrain.sculptStrokes + action.strokes.length,
+        },
+      });
+    }
+
+    case "addLayer": {
+      const layers = state.draft.terrain.layers ?? [];
+      const layer = createLayer(action.kind, layers.length);
+      return markDirty(state, {
+        ...state.draft,
+        terrain: {
+          ...state.draft.terrain,
+          layers: [...layers, layer],
+          activeLayerId: layer.id,
+        },
+      });
+    }
+
+    case "removeLayer": {
+      const layers = (state.draft.terrain.layers ?? []).filter((layer) => layer.id !== action.id);
+      const activeLayerId =
+        state.draft.terrain.activeLayerId === action.id ||
+        !layers.some((layer) => layer.id === state.draft.terrain.activeLayerId)
+          ? (layers[0]?.id ?? null)
+          : state.draft.terrain.activeLayerId;
+      return markDirty(state, {
+        ...state.draft,
+        terrain: { ...state.draft.terrain, layers, activeLayerId },
+      });
+    }
+
+    case "updateLayer": {
+      return markDirty(state, {
+        ...state.draft,
+        terrain: {
+          ...state.draft.terrain,
+          layers: (state.draft.terrain.layers ?? []).map((layer) =>
+            layer.id === action.id ? { ...layer, ...action.patch } : layer,
+          ),
+        },
+      });
+    }
+
+    case "moveLayer": {
+      const layers = [...(state.draft.terrain.layers ?? [])];
+      const index = layers.findIndex((layer) => layer.id === action.id);
+      const target = index + action.direction;
+      if (index < 0 || target < 0 || target >= layers.length) return state;
+      [layers[index], layers[target]] = [layers[target], layers[index]];
+      return markDirty(state, {
+        ...state.draft,
+        terrain: { ...state.draft.terrain, layers },
+      });
+    }
+
+    case "setActiveLayer": {
+      // A stale layer id (removed elsewhere) falls back to the first layer
+      // instead of leaving the toolbar pointing at nothing.
+      const exists = (state.draft.terrain.layers ?? []).some((layer) => layer.id === action.id);
+      const activeLayerId = action.id === null || exists
+        ? action.id
+        : (state.draft.terrain.layers?.[0]?.id ?? null);
+      return markDirty(state, {
+        ...state.draft,
+        terrain: { ...state.draft.terrain, activeLayerId },
+      });
+    }
+
+    case "addIONode": {
+      const placement = action.placementId
+        ? state.draft.placements.find((item) => item.id === action.placementId)
+        : undefined;
+      const node = createIONode(action.kind, state.draft.io.nodes.length, placement);
+      return markDirty(state, {
+        ...state.draft,
+        io: { ...state.draft.io, nodes: [...state.draft.io.nodes, node] },
+      });
+    }
+
+    case "updateIONode":
+      return markDirty(state, {
+        ...state.draft,
+        io: {
+          ...state.draft.io,
+          nodes: state.draft.io.nodes.map((node) =>
+            node.id === action.id ? { ...node, ...action.patch } : node,
+          ),
+        },
+      });
+
+    case "removeIONode":
+      return markDirty(state, {
+        ...state.draft,
+        io: {
+          nodes: state.draft.io.nodes.filter((node) => node.id !== action.id),
+          links: state.draft.io.links.filter(
+            (link) => link.from !== action.id && link.to !== action.id,
+          ),
+          vendingOverrides: state.draft.io.vendingOverrides,
+        },
+      });
+
+    case "addIOLink": {
+      if (action.from === action.to) return state;
+      const exists = state.draft.io.links.some(
+        (link) => link.from === action.from && link.to === action.to,
+      );
+      if (exists) return state;
+      const source = state.draft.io.nodes.find((node) => node.id === action.from);
+      return markDirty(state, {
+        ...state.draft,
+        io: {
+          ...state.draft.io,
+          links: [
+            ...state.draft.io.links,
+            createIOLink(action.from, action.to, source?.cardLevel ?? null),
+          ],
+        },
+      });
+    }
+
+    case "removeIOLink":
+      return markDirty(state, {
+        ...state.draft,
+        io: {
+          ...state.draft.io,
+          links: state.draft.io.links.filter((link) => link.id !== action.id),
+        },
+      });
+
+    case "addVendingOverride": {
+      if (!action.placementId) return state;
+      return markDirty(state, {
+        ...state.draft,
+        io: {
+          ...state.draft.io,
+          vendingOverrides: [
+            ...state.draft.io.vendingOverrides,
+            createVendingOverride(action.placementId, state.draft.io.vendingOverrides.length),
+          ],
+        },
+      });
+    }
+
+    case "updateVendingOverride":
+      return markDirty(state, {
+        ...state.draft,
+        io: {
+          ...state.draft.io,
+          vendingOverrides: state.draft.io.vendingOverrides.map((override) =>
+            override.id === action.id ? { ...override, ...action.patch } : override,
+          ),
+        },
+      });
+
+    case "removeVendingOverride":
+      return markDirty(state, {
+        ...state.draft,
+        io: {
+          ...state.draft.io,
+          vendingOverrides: state.draft.io.vendingOverrides.filter(
+            (override) => override.id !== action.id,
+          ),
+        },
       });
 
     case "addMaterialLayer":
@@ -667,6 +1319,25 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
 
     case "toggleStudio":
       return { ...state, draft: { ...state.draft, studioMode: !state.draft.studioMode } };
+
+    case "setWalkMode": {
+      if (action.enabled && state.draft.branch !== "world") return state;
+      return { ...state, draft: { ...state.draft, walkMode: action.enabled } };
+    }
+
+    case "setLighting": {
+      const time = action.patch.timeOfDay;
+      const patch: Partial<LightingSettings> = {
+        ...action.patch,
+        ...(time === undefined
+          ? {}
+          : { timeOfDay: Math.min(1439, Math.max(0, Math.round(time))) }),
+      };
+      return markDirty(state, {
+        ...state.draft,
+        lighting: { ...state.draft.lighting, ...patch },
+      });
+    }
 
     case "next": {
       if (!canAdvance(state.draft, state.stepId)) return state;

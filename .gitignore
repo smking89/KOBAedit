@@ -35,3 +35,6 @@ data/
 
 # Freebuff workspace marker
 .freebuff/
+
+# Chat attachment copies
+.cloud-attachments/

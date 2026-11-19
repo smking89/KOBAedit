@@ -1,4 +1,6 @@
 mod commands;
+mod tasks;
+mod thumbnails;
 
 use std::path::PathBuf;
 
@@ -35,6 +37,7 @@ pub fn run() {
         db_path: data.join("rust-studio.db"),
         engine_dir: engine_dir(),
         project_root: root,
+        tasks: tasks::TaskManager::default(),
     };
 
     if let Err(error) = commands::initialize(&state) {
@@ -46,13 +49,39 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::index_stats,
             commands::list_prefabs,
+            commands::browse_prefabs,
+            commands::linked_bundle_root,
+            commands::set_linked_bundle_root,
             commands::list_base_meshes,
+            commands::get_base_mesh_thumbnail,
             commands::inspect_map,
             commands::save_project,
             commands::export_project,
             commands::ingest_assets,
+            commands::scan_rust_bundles,
+            commands::bundle_scan_status,
+            commands::cancel_bundle_scan,
+            commands::pick_bundle_folder,
+            commands::queue_project_delta,
             commands::sync_status,
+            commands::sync_configure,
+            commands::sync_test,
+            commands::sync_push,
+            commands::sync_pull,
+            commands::sync_resolve,
+            thumbnails::save_prefab_thumbnail,
+            thumbnails::get_thumbnail_path,
+            thumbnails::get_thumbnail_data,
+            thumbnails::load_cached_mesh_bytes,
+            thumbnails::find_rust_install,
+            thumbnails::extract_prefab_glb,
+            thumbnails::render_monument_previews,
+            thumbnails::prefab_extraction_status,
+            thumbnails::cancel_prefab_extraction,
+            thumbnails::cache_stats,
+            thumbnails::prune_cache,
+            thumbnails::enforce_cache_limit,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Rust Studio");
+        .expect("error while running KOBA EDIT");
 }

@@ -133,16 +133,18 @@ export function TextInput({
   onChange,
   placeholder,
   mono = false,
+  password = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   mono?: boolean;
+  password?: boolean;
 }) {
   return (
     <input
       className={`text-input${mono ? " is-mono" : ""}`}
-      type="text"
+      type={password ? "password" : "text"}
       value={value}
       placeholder={placeholder}
       onChange={(event) => onChange(event.target.value)}

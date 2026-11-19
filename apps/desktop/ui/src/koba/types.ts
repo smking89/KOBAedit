@@ -33,6 +33,7 @@ export interface KobaGeneration {
   step: WizardStepId;
   name: string;
   summary: string[];
+  chips?: { label: string; prompt: string }[];
 }
 
 export type KobaRole = "user" | "assistant";
@@ -46,4 +47,7 @@ export interface KobaMessage {
   exportPath?: string;
   exportBytes?: number;
   error?: boolean;
+  chips?: { label: string; prompt: string }[];
+  /** Prompt-build receipt: one-click undo for the whole animated build. */
+  undo?: boolean;
 }

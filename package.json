@@ -13,6 +13,8 @@
     "typecheck": "npm run typecheck --workspace @rust-studio/ui",
     "tauri": "npm --prefix apps/desktop run tauri",
     "tauri:dev": "npm --prefix apps/desktop run tauri -- dev",
-    "tauri:build": "npm --prefix apps/desktop run tauri -- build"
+    "tauri:build": "npm --prefix apps/desktop run tauri -- build",
+    "check:assets": "node scripts/check-asset-names.mjs",
+    "ios:tablet": "node scripts/ios-tablet-only.mjs"
   }
 }

@@ -482,13 +482,19 @@ class AssetIndexer:
         return True
 
     def index_bundle_prefab(
-        self, pack_id: int, asset_path: str, *, bundle_name: str
+        self,
+        pack_id: int,
+        asset_path: str,
+        *,
+        bundle_name: str,
+        source: str = "unity-bundle",
     ) -> bool:
-        """Record a prefab path exposed by an AssetBundle container table.
+        """Record a prefab path exposed by a bundle or the GameManifest.
 
         Unity bundles do not carry the game's serialized prefab modifiers, so
         geometry, flags and thumbnails stay unknown here. The identity (path,
-        name, Rust prefab id) is what map editing and export need.
+        name, Rust prefab id) is what map editing and export need. Manifest
+        paths cover scene monsters (monuments) that never get a container row.
         """
         name = prefab_name_from_path(asset_path)
         lowered = asset_path.lower()
@@ -497,12 +503,17 @@ class AssetIndexer:
             category = "Entity"
 
         existing = self.connection.execute(
-            "SELECT id FROM prefabs WHERE pack_id = ? AND asset_path = ?",
+            "SELECT id, modifiers_json FROM prefabs WHERE pack_id = ? AND asset_path = ?",
             (pack_id, asset_path),
         ).fetchone()
         if existing:
-            # Preserve bounds, flatten settings and thumbnails that a manifest
-            # or a previous extraction may already have filled in.
+            # Preserve bounds, flatten settings, thumbnails and provenance that
+            # a manifest or a previous geometry pass already filled in.
+            try:
+                metadata = json.loads(existing["modifiers_json"] or "{}")
+            except json.JSONDecodeError:
+                metadata = {}
+            metadata.update({"source": source, "bundle": bundle_name})
             self.connection.execute(
                 """
                 UPDATE prefabs
@@ -514,7 +525,7 @@ class AssetIndexer:
                     name,
                     category,
                     prefab_id_from_path(asset_path),
-                    json.dumps({"source": "unity-bundle", "bundle": bundle_name}),
+                    json.dumps(metadata),
                     existing["id"],
                 ),
             )
@@ -531,7 +542,7 @@ class AssetIndexer:
                     name,
                     category,
                     prefab_id_from_path(asset_path),
-                    json.dumps({"source": "unity-bundle", "bundle": bundle_name}),
+                    json.dumps({"source": source, "bundle": bundle_name}),
                 ),
             )
         self._index_search("prefab", asset_path, name, asset_path)
