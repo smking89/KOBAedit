@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rust-studio-engine"
+version = "0.1.0"
+description = "Offline geometry, WorldSerialization, texture and asset-index engine for Rust Studio."
+requires-python = ">=3.10"
+dependencies = [
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+fast-lz4 = [
+    "lz4>=4.3",
+]
+bundles = [
+    "UnityPy>=1.20",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+rust-studio-engine = "rust_studio_engine.cli:main"
+rust-studio-ingest = "rust_studio_engine.cli:main"
+rust-studio-engine-serve = "rust_studio_engine.__main__:serve"
+
+[tool.setuptools.packages.find]
+include = ["rust_studio_engine*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

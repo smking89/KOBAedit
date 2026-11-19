@@ -1,0 +1,235 @@
+/**
+ * Domain model for the dual-branch wizard.
+ *
+ * The state machine in `machine.ts` is pure: it owns this draft, the current
+ * step, and validation. Everything here must stay JSON-serializable so a project
+ * can be resumed offline from SQLite or localStorage.
+ */
+
+export type EntryMode = "offline" | "online";
+export type ProjectKind = "map" | "monument" | "skin";
+export type Branch = "world" | "skin";
+
+export type WorldStepId = "entry" | "terrain" | "monuments" | "paths" | "loot" | "validate";
+export type SkinStepId = "entry" | "baseItem" | "materials" | "paint" | "wear" | "workshop";
+export type WizardStepId = WorldStepId | SkinStepId;
+
+export type TerrainPreset = "islands" | "mountains" | "valley" | "flat" | "archipelago";
+
+export type BrushMode = "raise" | "lower" | "smooth" | "flatten" | "splat" | "topology" | "alpha";
+export type SplatChannel = "dirt" | "snow" | "sand" | "rock" | "grass" | "forest" | "stones" | "gravel";
+export type BiomeChannel = "arid" | "temperate" | "tundra" | "arctic";
+export type TopologyFlag =
+  | "no_build"
+  | "monument_pad"
+  | "foliage_cleared"
+  | "path_clear"
+  | "loot_zone"
+  | "npc_zone"
+  | "safe_zone";
+
+export interface TerrainBrush {
+  mode: BrushMode;
+  radius: number;
+  strength: number;
+  falloff: number;
+  splatChannel: SplatChannel;
+  biomeChannel: BiomeChannel;
+  topologyFlags: TopologyFlag[];
+}
+
+export interface TerrainSettings {
+  seed: number;
+  preset: TerrainPreset;
+  sizeMetres: number;
+  mountainScale: number;
+  waterLevel: number;
+  detail: number;
+  treeDensity: number;
+  biomeWeights: [number, number, number, number];
+  brush: TerrainBrush;
+  sculptStrokes: number;
+}
+
+export interface Bounds3 {
+  min: [number, number, number];
+  max: [number, number, number];
+}
+
+export interface PrefabAsset {
+  id: string;
+  name: string;
+  category: "Monument" | "Decor" | "Building" | "Vehicle" | "Entity" | "Terrain" | "Other";
+  bounds: Bounds3;
+  flattenRadius: number;
+  hasLoot: boolean;
+  hasIO: boolean;
+  hasNpc: boolean;
+  thumbnailPath?: string;
+}
+
+export interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface PrefabPlacement {
+  id: string;
+  assetId: string;
+  name: string;
+  position: Vec3;
+  rotationEuler: Vec3;
+  scale: Vec3;
+  parentId: string | null;
+  flatten: boolean;
+  flattenRadius: number;
+  flattenFalloff: number;
+  clearFoliage: boolean;
+  noBuildZone: boolean;
+  lootTier: 1 | 2 | 3;
+  lootProfile: string;
+  ioWiring: string;
+  npcCount: number;
+  locked: boolean;
+}
+
+export type SplineKind = "road" | "river" | "rail" | "apc" | "cargo" | "powerline";
+
+export interface SplineNode {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface RouteSpline {
+  id: string;
+  name: string;
+  kind: SplineKind;
+  width: number;
+  closed: boolean;
+  autoRoute: boolean;
+  nodes: SplineNode[];
+}
+
+export interface LootSettings {
+  tier: 1 | 2 | 3;
+  crateCount: number;
+  vendingMachines: number;
+  cardPuzzles: number;
+  npcSpawners: number;
+  radiationZones: number;
+  noBuildZones: number;
+  lootDensity: number;
+  cardLevels: [boolean, boolean, boolean];
+}
+
+export interface MaterialLayer {
+  id: string;
+  preset: "metal" | "polymer" | "wood" | "carbon" | "custom";
+  name: string;
+  metallic: number;
+  smoothness: number;
+  baseColor: string;
+  textureName: string | null;
+  blend: "normal" | "multiply" | "overlay";
+  scale: number;
+  enabled: boolean;
+}
+
+export type DecalStamp = "stripe" | "hazard" | "circle" | "number" | "scratch" | "custom";
+export type PaintMode = "projected" | "brush2d" | "brush3d";
+
+export interface DecalStroke {
+  id: string;
+  stamp: DecalStamp;
+  mode: PaintMode;
+  color: string;
+  size: number;
+  opacity: number;
+  rotation: number;
+  uvAnchor: [number, number] | null;
+}
+
+export interface WearSettings {
+  edgeWear: number;
+  grunge: number;
+  dirt: number;
+  scratches: number;
+  emissionStrength: number;
+  lighting: "day" | "dusk" | "flashlight" | "night";
+  showSeams: boolean;
+}
+
+export interface SkinSettings {
+  baseMeshId: string | null;
+  baseMeshName: string;
+  uvChannels: number;
+  resolution: 1024 | 2048;
+  layers: MaterialLayer[];
+  decals: DecalStroke[];
+  wear: WearSettings;
+  paintStrokes: number;
+  smartProjection: boolean;
+}
+
+export interface ExportSettings {
+  fileName: string;
+  outputDir: string;
+  stripEditorData: boolean;
+  mapPassword: string;
+  mapLock: boolean;
+  workshopTags: string[];
+  includeEmission: boolean;
+}
+
+export interface WizardDraft {
+  name: string;
+  mode: EntryMode;
+  projectKind: ProjectKind;
+  branch: Branch;
+  syncEndpoint: string;
+  studioMode: boolean;
+  terrain: TerrainSettings;
+  placements: PrefabPlacement[];
+  selectedPlacementId: string | null;
+  splines: RouteSpline[];
+  loot: LootSettings;
+  skin: SkinSettings;
+  export: ExportSettings;
+}
+
+export interface StepMeta {
+  id: WizardStepId;
+  label: string;
+  title: string;
+  description: string;
+  branch: Branch;
+  /** Studio Mode unlocks manual controls, it never hides the step itself. */
+  studioTools: string[];
+}
+
+export interface ValidationIssue {
+  id: string;
+  step: WizardStepId;
+  severity: "error" | "warning" | "info";
+  message: string;
+  detail?: string;
+}
+
+export interface WizardState {
+  draft: WizardDraft;
+  stepId: WizardStepId;
+  furthestIndex: number;
+  dirty: boolean;
+  lastSavedAt: string | null;
+  exportReport: ExportReport | null;
+}
+
+export interface ExportReport {
+  kind: "map" | "prefab" | "skin";
+  path: string;
+  bytes: number;
+  channels?: string[];
+  createdAt: string;
+}
