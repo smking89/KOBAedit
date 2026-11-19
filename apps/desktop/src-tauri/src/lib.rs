@@ -53,6 +53,7 @@ pub fn run() {
             commands::linked_bundle_root,
             commands::set_linked_bundle_root,
             commands::list_base_meshes,
+            commands::browse_base_meshes,
             commands::get_base_mesh_thumbnail,
             commands::inspect_map,
             commands::save_project,

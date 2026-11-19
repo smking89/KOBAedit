@@ -114,6 +114,35 @@ export async function renderMonumentPreviews(bundleRoot: string): Promise<Monume
   return invokeCommand<MonumentPreviewReport>("render_monument_previews", { bundleRoot });
 }
 
+export interface BaseMeshPage {
+  rows: BaseMeshAsset[];
+  total: number;
+}
+
+/** Search-backed page of meshes; the catalogue can hold 30k+ GLBs. */
+export async function browseBaseMeshes(
+  options: { query?: string; kind?: string; limit?: number; offset?: number } = {},
+): Promise<BaseMeshPage> {
+  const query = options.query?.trim().toLowerCase() ?? "";
+  const kind = options.kind ?? "all";
+  const limit = options.limit ?? 100;
+  const offset = options.offset ?? 0;
+  if (!isTauri()) {
+    const filtered = DEMO_BASE_MESHES.filter(
+      (mesh) =>
+        (kind === "all" || mesh.itemKind === kind) &&
+        (!query || mesh.name.toLowerCase().includes(query)),
+    );
+    return { rows: filtered.slice(offset, offset + limit), total: filtered.length };
+  }
+  return invokeCommand<BaseMeshPage>("browse_base_meshes", {
+    query,
+    kind,
+    limit,
+    offset,
+  });
+}
+
 export async function listBaseMeshes(): Promise<BaseMeshAsset[]> {
   if (!isTauri()) {
     await wait();

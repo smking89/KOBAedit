@@ -66,6 +66,13 @@ pub struct BaseMeshRow {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BaseMeshPage {
+    pub rows: Vec<BaseMeshRow>,
+    pub total: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InspectResponse {
     pub file: String,
     #[serde(flatten)]
@@ -395,6 +402,65 @@ fn prefab_rows(connection: &Connection) -> Result<Vec<PrefabAssetRow>, String> {
 pub fn list_base_meshes(state: State<'_, AppState>) -> Result<Vec<BaseMeshRow>, String> {
     let connection = open(&state)?;
     base_mesh_rows(&connection)
+}
+
+/// One filtered page of base meshes. The local catalogue can hold tens of
+/// thousands of GLBs, so the picker searches and pages on the Rust side.
+#[tauri::command]
+pub fn browse_base_meshes(
+    state: State<'_, AppState>,
+    query: Option<String>,
+    kind: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<BaseMeshPage, String> {
+    let connection = open(&state)?;
+    let limit = limit.unwrap_or(200).clamp(1, 500);
+    let offset = offset.unwrap_or(0).max(0);
+    let search = query.unwrap_or_default().trim().to_lowercase();
+    let kind = kind.unwrap_or_else(|| "all".into());
+    let pattern = format!("%{search}%");
+    let total: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM base_meshes
+              WHERE (?1 = '' OR lower(name) LIKE ?2 OR lower(asset_path) LIKE ?2)
+                AND (?3 = 'all' OR item_kind = ?3)",
+            rusqlite::params![search, pattern, kind],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut statement = connection
+        .prepare(
+            "SELECT asset_path, name, item_kind, uv_channel_count, triangle_count,
+                    has_tangents, metadata_json
+               FROM base_meshes
+              WHERE (?1 = '' OR lower(name) LIKE ?2 OR lower(asset_path) LIKE ?2)
+                AND (?3 = 'all' OR item_kind = ?3)
+              ORDER BY item_kind, name LIMIT ?4 OFFSET ?5",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(rusqlite::params![search, pattern, kind, limit, offset], |row| {
+            let metadata: String = row.get(6)?;
+            let material_slots = serde_json::from_str::<Value>(&metadata)
+                .ok()
+                .and_then(|value| value.get("materialSlots").cloned())
+                .and_then(|value| serde_json::from_value::<Vec<String>>(value).ok())
+                .unwrap_or_default();
+            Ok(BaseMeshRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                item_kind: row.get(2)?,
+                uv_channels: row.get(3)?,
+                triangles: row.get(4)?,
+                has_tangents: row.get::<_, i64>(5)? != 0,
+                material_slots,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(BaseMeshPage { rows, total })
 }
 
 /// Return the indexer's cached base-mesh preview without exposing filesystem

@@ -19,6 +19,10 @@ engine/.ruff_cache/
 
 # Local data, never committed
 data/
+KOBAedit/
+KOBAedit[1-9]/
+KOBAEDIT*/
+rust-studio.db
 *.db
 *.db-journal
 *.db-wal

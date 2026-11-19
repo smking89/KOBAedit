@@ -15,6 +15,8 @@
     "tauri:dev": "npm --prefix apps/desktop run tauri -- dev",
     "tauri:build": "npm --prefix apps/desktop run tauri -- build",
     "check:assets": "node scripts/check-asset-names.mjs",
-    "ios:tablet": "node scripts/ios-tablet-only.mjs"
+    "ios:tablet": "node scripts/ios-tablet-only.mjs",
+    "index:assets": "bash scripts/index-kobaedit-assets.sh",
+    "index:local": "python3 engine/scripts/index_local_assets.py --db data/rust-studio.db"
   }
 }

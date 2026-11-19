@@ -15,7 +15,7 @@ import {
   TextInput,
   Toggle,
 } from "../../components/ui";
-import { exportProject, listBaseMeshes } from "../../lib/ipc";
+import { browseBaseMeshes, exportProject } from "../../lib/ipc";
 import type { BaseMeshAsset } from "../../lib/demoAssets";
 import { useWizard } from "../context";
 import { createMaterialLayer } from "../machine";
@@ -46,20 +46,45 @@ export function BaseItemStep() {
   const { state, dispatch } = useWizard();
   const skin = state.draft.skin;
   const [meshes, setMeshes] = useState<BaseMeshAsset[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<"all" | "weapon" | "attire" | "deployable">("all");
   const [query, setQuery] = useState("");
 
   useEffect(() => {
-    listBaseMeshes()
-      .then(setMeshes)
-      .catch(() => setMeshes([]));
-  }, []);
+    let live = true;
+    setLoading(true);
+    const timer = window.setTimeout(() => {
+      browseBaseMeshes({ query, kind: filter, limit: 100 })
+        .then((page) => {
+          if (!live) return;
+          setMeshes(page.rows);
+          setTotal(page.total);
+        })
+        .catch(() => {
+          if (!live) return;
+          setMeshes([]);
+          setTotal(0);
+        })
+        .finally(() => live && setLoading(false));
+    }, 180);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [query, filter]);
 
-  const visible = meshes.filter(
-    (mesh) =>
-      (filter === "all" || mesh.itemKind === filter) &&
-      (!query || mesh.name.toLowerCase().includes(query.toLowerCase())),
-  );
+  const loadMore = async () => {
+    setLoading(true);
+    try {
+      const page = await browseBaseMeshes({ query, kind: filter, limit: 100, offset: meshes.length });
+      setMeshes((current) => [...current, ...page.rows]);
+      setTotal(page.total);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const selected = meshes.find((mesh) => mesh.id === skin.baseMeshId) ?? null;
 
   const selectMesh = (mesh: BaseMeshAsset) => {
@@ -81,7 +106,7 @@ export function BaseItemStep() {
 
   return (
     <div className="stack">
-      <Panel title="Base item" subtitle={`${meshes.length} meshes in the local index`}>
+      <Panel title="Base item" subtitle={`${total.toLocaleString()} meshes in the local index`}>
         <TextInput value={query} onChange={setQuery} placeholder="Search weapons, attire, deployables" />
         <div className="chip-row">
           {(["all", "weapon", "attire", "deployable"] as const).map((kind) => (
@@ -96,7 +121,7 @@ export function BaseItemStep() {
           ))}
         </div>
         <ul className="mesh-list">
-          {visible.map((mesh) => (
+          {meshes.map((mesh) => (
             <li key={mesh.id}>
               <button
                 type="button"
@@ -114,6 +139,11 @@ export function BaseItemStep() {
             </li>
           ))}
         </ul>
+        {meshes.length < total && (
+          <Button type="button" variant="ghost" onClick={loadMore} disabled={loading}>
+            {loading ? "Loading…" : `Load more (${(total - meshes.length).toLocaleString()} left)`}
+          </Button>
+        )}
       </Panel>
 
       {selected && (
