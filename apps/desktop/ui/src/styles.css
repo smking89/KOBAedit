@@ -4912,3 +4912,20 @@ input[type="range"]::-moz-range-thumb {
   text-transform: uppercase;
   color: rgba(217, 162, 75, 0.9);
 }
+
+.koba-slash button {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+}
+
+.koba-slash button em {
+  font-style: normal;
+  opacity: 0.55;
+}
+
+.koba-slash button.is-active {
+  color: var(--accent);
+}

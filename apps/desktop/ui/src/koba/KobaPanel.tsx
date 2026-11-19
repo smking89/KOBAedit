@@ -18,6 +18,11 @@ import { parseAppSegment, type AppEffect } from "../lib/appCommands";
 import type { WizardStepId } from "../wizard/types";
 import type { KobaAttachment, KobaMessage } from "./types";
 import type { ParsedCommand } from "../lib/commands";
+import {
+  applyCompletion,
+  slashCompletion,
+  type SlashSuggestion,
+} from "../lib/autocomplete";
 import type { PrefabAsset, WizardDraft } from "../wizard/types";
 
 /** Stages of a live prompt build, shaped per workspace branch. */
@@ -191,6 +196,9 @@ export function KobaPanel({
   const buildRun = useRef<{ cancelled: boolean; paused: boolean } | null>(null);
   const [messages, setMessages] = useState<KobaMessage[]>([WELCOME]);
   const [prompt, setPrompt] = useState("");
+  const [caret, setCaret] = useState(0);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
   const [attachments, setAttachments] = useState<KobaAttachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -214,6 +222,21 @@ export function KobaPanel({
   const textRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const preview = useMemo(() => demoMode(), []);
+  const slash = useMemo(
+    () => (slashDismissed ? null : slashCompletion(prompt, caret)),
+    [prompt, caret, slashDismissed],
+  );
+  const acceptSlash = (suggestion: SlashSuggestion) => {
+    if (!slash) return;
+    const next = applyCompletion(prompt, slash, suggestion);
+    setPrompt(next.text);
+    setCaret(next.caret);
+    setSlashDismissed(false);
+    requestAnimationFrame(() => {
+      textRef.current?.focus();
+      textRef.current?.setSelectionRange(next.caret, next.caret);
+    });
+  };
   const autocomplete = useMemo(() => {
     const needle = prompt.trim().toLowerCase();
     if (needle.length < 2) return [];
@@ -789,8 +812,35 @@ export function KobaPanel({
             value={prompt}
             rows={3}
             placeholder="Build a foggy 3 km mountain map with six monuments, two roads and tier 3 loot."
-            onChange={(event) => setPrompt(event.target.value)}
+            onChange={(event) => {
+              setPrompt(event.target.value);
+              setCaret(event.target.selectionStart ?? event.target.value.length);
+              setSlashIndex(0);
+              setSlashDismissed(false);
+            }}
+            onKeyUp={(event) => setCaret(event.currentTarget.selectionStart ?? prompt.length)}
+            onClick={(event) => setCaret(event.currentTarget.selectionStart ?? prompt.length)}
             onKeyDown={(event) => {
+              if (slash && slash.items.length > 0) {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setSlashIndex((current) => {
+                    const next = current + (event.key === "ArrowDown" ? 1 : -1);
+                    return (next + slash.items.length) % slash.items.length;
+                  });
+                  return;
+                }
+                if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+                  event.preventDefault();
+                  acceptSlash(slash.items[Math.min(slashIndex, slash.items.length - 1)]!);
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setSlashDismissed(true);
+                  return;
+                }
+              }
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 void send();
@@ -804,7 +854,26 @@ export function KobaPanel({
             </div>
           )}
 
-          {autocomplete.length > 0 && (
+          {slash && slash.items.length > 0 && (
+            <div className="koba-autocomplete koba-slash" role="listbox" aria-label="Slash command suggestions">
+              {slash.items.slice(0, 8).map((suggestion, index) => (
+                <button
+                  key={`${suggestion.kind}-${suggestion.label}`}
+                  type="button"
+                  role="option"
+                  aria-selected={index === slashIndex}
+                  className={index === slashIndex ? "is-active" : undefined}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => acceptSlash(suggestion)}
+                >
+                  <span>{suggestion.label}</span>
+                  <em>{suggestion.detail}</em>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {!slash && autocomplete.length > 0 && (
             <div className="koba-autocomplete" role="listbox" aria-label="Command suggestions">
               {autocomplete.map((suggestion) => (
                   <button
