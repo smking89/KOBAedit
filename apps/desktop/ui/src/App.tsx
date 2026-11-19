@@ -2,9 +2,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AssetBrowser } from "./assets/AssetBrowser";
 import { BrandingPanel } from "./components/BrandingPanel";
+import { PromoStudio } from "./components/PromoStudio";
+import { SplashScreen } from "./components/SplashScreen";
+import { WalkHud } from "./components/WalkHud";
 import { StepsNav } from "./components/StepsNav";
 import { WatermarkOverlay } from "./components/WatermarkOverlay";
-import { loadBranding, saveBranding } from "./lib/branding";
+import {
+  clampWatermark,
+  loadBranding,
+  sanitizeBranding,
+  saveBranding,
+  type WatermarkSettings,
+} from "./lib/branding";
+import { parseAppSegment, type AppEffect, type PromoRequest } from "./lib/appCommands";
+import { applyTheme, loadTheme, saveTheme, type Theme } from "./lib/theme";
+import {
+  composeSnippet,
+  copySnippet,
+  createWatermarkPainter,
+  downloadBlob,
+  snippetFileName,
+  videoExtension,
+} from "./lib/snippet";
 import { Badge, Button } from "./components/ui";
 import { KobaPanel } from "./koba/KobaPanel";
 import { demoMode, saveProject, syncStatus } from "./lib/ipc";
@@ -49,11 +68,137 @@ export default function App() {
   const [kobaOpen, setKobaOpen] = useState(false);
   const [assetsOpen, setAssetsOpen] = useState(false);
   const [brandingOpen, setBrandingOpen] = useState(false);
+  const [promoOpen, setPromoOpen] = useState(false);
+  const [snippetBusy, setSnippetBusy] = useState<"still" | "loop" | null>(null);
+  const [snippetNote, setSnippetNote] = useState<string | null>(null);
   const [brandingState, setBrandingState] = useState(loadBranding);
+  const [theme, setTheme] = useState<Theme>(loadTheme);
+  const [splashDone, setSplashDone] = useState(false);
+  const [promoRequest, setPromoRequest] = useState<(PromoRequest & { id: number }) | null>(null);
+  const brandingRef = useRef(brandingState);
 
   useEffect(() => {
+    applyTheme(theme);
+    saveTheme(theme);
+  }, [theme]);
+
+  // Alt+T flips the studio theme from anywhere.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.altKey && (event.key === "t" || event.key === "T")) {
+        event.preventDefault();
+        setTheme((current) => (current === "dark" ? "light" : "dark"));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    if (!snippetNote) return;
+    const timer = window.setTimeout(() => setSnippetNote(null), 3200);
+    return () => window.clearTimeout(timer);
+  }, [snippetNote]);
+
+  const captureSnippet = async (
+    mode: "still" | "loop",
+    options: { filename?: string; seconds?: number; watermark?: WatermarkSettings; copy?: boolean } = {},
+  ) => {
+    const tools = groundTools.current;
+    if (!tools || snippetBusy) return;
+    setSnippetBusy(mode);
+    try {
+      const { branding, watermark: activeWatermark } = brandingRef.current;
+      const watermark = options.watermark ?? activeWatermark;
+      if (mode === "still") {
+        const frame = tools.captureFrame();
+        if (!frame) {
+          setSnippetNote("Viewport is not ready yet.");
+          return;
+        }
+        const blob = await composeSnippet(frame, watermark, branding);
+        const copied = options.copy === false ? false : await copySnippet(blob);
+        downloadBlob(blob, options.filename ?? `${snippetFileName()}.png`);
+        setSnippetNote(
+          copied
+            ? "Snippet copied to clipboard and saved as PNG."
+            : "Snippet saved as PNG (clipboard unavailable).",
+        );
+        return;
+      }
+      const selected = draft.placements.find((item) => item.id === draft.selectedPlacementId);
+      const focus = selected?.position ?? { x: 0, z: 0 };
+      const radius = Math.max(90, (selected?.collisionRadius ?? 20) * 7);
+      const painter = await createWatermarkPainter(watermark, branding);
+      const seconds = Math.max(1, Math.min(30, options.seconds ?? 5));
+      const blob = await tools.recordTour({
+        shots: [{ x: focus.x, z: focus.z, radius, seconds }],
+        draw: (ctx, width, height) => painter(ctx, width, height),
+      });
+      if (!blob) {
+        setSnippetNote("This machine cannot record WebM loops.");
+        return;
+      }
+      downloadBlob(blob, `${snippetFileName("koba-loop")}.${videoExtension(blob)}`);
+      setSnippetNote(`${seconds} s turntable loop saved as WebM.`);
+    } catch (error) {
+      setSnippetNote(error instanceof Error ? error.message : "Snippet capture failed.");
+    } finally {
+      setSnippetBusy(null);
+    }
+  };
+
+  useEffect(() => {
+    brandingRef.current = brandingState;
     saveBranding(brandingState);
   }, [brandingState]);
+
+  /** Executes prompt-derived app commands in order and returns receipts. */
+  const applyAppEffects = async (effects: AppEffect[]): Promise<string[]> => {
+    const receipts: string[] = [];
+    for (const effect of effects) {
+      switch (effect.kind) {
+        case "watermark": {
+          const next = clampWatermark({ ...brandingRef.current.watermark, ...effect.patch });
+          const nextState = { ...brandingRef.current, watermark: next };
+          brandingRef.current = nextState;
+          setBrandingState(nextState);
+          const visible = next.source === "off" ? "hidden" : `${Math.round(next.opacity * 100)}% · ${next.anchor}`;
+          receipts.push(`${effect.note} (${visible}).`);
+          break;
+        }
+        case "brand": {
+          const next = sanitizeBranding({ ...brandingRef.current.branding, ...effect.patch });
+          const nextState = { ...brandingRef.current, branding: next };
+          brandingRef.current = nextState;
+          setBrandingState(nextState);
+          receipts.push(effect.note + ".");
+          break;
+        }
+        case "snippet-still":
+          await captureSnippet("still", { filename: effect.filename });
+          receipts.push(effect.note + ".");
+          break;
+        case "snippet-turntable":
+          await captureSnippet("loop", { seconds: effect.seconds });
+          receipts.push(effect.note + ".");
+          break;
+        case "promo":
+          setPromoOpen(true);
+          setPromoRequest({ ...effect.request, id: Date.now() });
+          receipts.push(effect.note + ".");
+          break;
+        case "timeline":
+          setPromoOpen(effect.open);
+          receipts.push(effect.note + ".");
+          break;
+        case "unavailable":
+          receipts.push(effect.note);
+          break;
+      }
+    }
+    return receipts;
+  };
   const [radarOpen, setRadarOpen] = useState(false);
   const [sync, setSync] = useState<{ active: boolean; pending: number; conflicts: number } | null>(null);
   const [quality, setQuality] = useState<QualityPreference>(() => getQualityPreference());
@@ -234,6 +379,7 @@ export default function App() {
       }}
       onDrop={onPrefabDrop}
     >
+      {!splashDone && <SplashScreen onDone={() => setSplashDone(true)} />}
       <header className="topbar">
         <div className="brand">
           <img className="brand-logo" src="/koba-wordmark.png" alt="KOBA EDIT" />
@@ -314,12 +460,53 @@ export default function App() {
               <em>Local index</em>
             </span>
           </button>
+          <button
+            type="button"
+            className="theme-toggle"
+            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            title={`${theme === "dark" ? "Light" : "Dark"} theme (Alt + T)`}
+            onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+          >
+            {theme === "dark" ? (
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="8" cy="8" r="3.2" fill="currentColor" />
+                <g stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
+                  <path d="M8 1v1.8M8 13.2V15M1 8h1.8M13.2 8H15M3.1 3.1l1.3 1.3M11.6 11.6l1.3 1.3M12.9 3.1l-1.3 1.3M4.4 11.6l-1.3 1.3" />
+                </g>
+              </svg>
+            ) : (
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M12.8 9.6A5.6 5.6 0 0 1 6.4 3.2a5.6 5.6 0 1 0 6.4 6.4Z" fill="currentColor" />
+              </svg>
+            )}
+          </button>
           <Button
             variant={brandingOpen ? "primary" : "ghost"}
             aria-pressed={brandingOpen}
             onClick={() => setBrandingOpen((open) => !open)}
           >
             Branding
+          </Button>
+          <Button
+            variant="ghost"
+            disabled={snippetBusy !== null}
+            onClick={() => void captureSnippet("still")}
+          >
+            Snippet
+          </Button>
+          <Button
+            variant="ghost"
+            disabled={snippetBusy !== null}
+            onClick={() => void captureSnippet("loop")}
+          >
+            Loop 5s
+          </Button>
+          <Button
+            variant={promoOpen ? "primary" : "ghost"}
+            aria-pressed={promoOpen}
+            onClick={() => setPromoOpen((open) => !open)}
+          >
+            Promo
           </Button>
           <Button variant="ghost" onClick={undo} disabled={!canUndo}>
             Undo
@@ -372,6 +559,7 @@ export default function App() {
             />
             <Viewport
               key={quality}
+              theme={theme}
               draft={draft}
               stepId={state.stepId}
               onSculpt={(strokes) => dispatch({ type: "addStrokes", strokes })}
@@ -451,6 +639,7 @@ export default function App() {
                 </ul>
               </div>
             )}
+            {draft.walkMode && <WalkHud branding={brandingState.branding} />}
             {draft.walkMode && (
               <div className="touch-walk" aria-label="Touch walk controls">
                 <div className="touch-stick">
@@ -692,6 +881,7 @@ export default function App() {
       <KobaPanel
         open={kobaOpen}
         onClose={() => setKobaOpen(false)}
+        onAppEffects={applyAppEffects}
         onStageFocus={(next, stage) => {
           if (!next.placements.length) {
             if (stage === 0) groundTools.current?.focus(0, 0, 900);
@@ -718,6 +908,22 @@ export default function App() {
         onChange={setBrandingState}
         onClose={() => setBrandingOpen(false)}
       />
+      <PromoStudio
+        open={promoOpen}
+        onClose={() => setPromoOpen(false)}
+        placements={draft.placements}
+        sizeMetres={draft.terrain.sizeMetres}
+        branding={brandingState.branding}
+        watermark={brandingState.watermark}
+        request={promoRequest}
+        onRequestApplied={() => setPromoRequest(null)}
+        record={(options) => groundTools.current?.recordTour(options) ?? Promise.resolve(null)}
+      />
+      {snippetNote && (
+        <div className="snippet-toast" role="status" aria-live="polite">
+          {snippetNote}
+        </div>
+      )}
     </div>
   );
 }

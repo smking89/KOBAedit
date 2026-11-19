@@ -6,22 +6,92 @@ import { useWizard } from "../wizard/context";
 import { readAttachment, revokeAttachment } from "./attachments";
 import { refreshProjectThumbnail } from "../utils/thumbnailQueue";
 import { generateProject } from "./generate";
+import { applyCommand } from "../lib/commands";
+import { splitSegments, parsePromptSegment, commandLabel, commandToPrompt } from "../lib/promptParser";
+import { parseAppSegment, type AppEffect } from "../lib/appCommands";
+import type { WizardStepId } from "../wizard/types";
 import type { KobaAttachment, KobaMessage } from "./types";
+import type { ParsedCommand } from "../lib/commands";
 import type { PrefabAsset, WizardDraft } from "../wizard/types";
 
-/** Stages of a live prompt build: terrain → surfaces → monuments → roads. */
+/** Stages of a live prompt build, shaped per workspace branch. */
 function buildStages(draft: WizardDraft): { label: string; draft: WizardDraft }[] {
-  if (draft.branch !== "world") return [{ label: "Draft", draft }];
+  if (draft.projectKind === "monument") return monumentStages(draft);
+  if (draft.projectKind === "skin") return skinStages(draft);
   const bareTerrain = {
     ...draft.terrain,
     strokes: [],
     layers: draft.terrain.layers.map((layer) => ({ ...layer, strokes: [] })),
   };
+  const painted = new Set(["splat", "alpha"]);
+  const paintOnly = {
+    ...draft.terrain,
+    strokes: draft.terrain.strokes.filter((stroke) => painted.has(stroke.mode)),
+    layers: draft.terrain.layers.map((layer) => ({
+      ...layer,
+      strokes: layer.strokes.filter((stroke) => painted.has(stroke.mode)),
+    })),
+  };
   return [
     { label: "Terrain", draft: { ...draft, placements: [], splines: [], terrain: bareTerrain } },
-    { label: "Surfaces", draft: { ...draft, placements: [], splines: [] } },
+    { label: "Biomes & splats", draft: { ...draft, placements: [], splines: [], terrain: paintOnly } },
+    { label: "Topology & cliffs", draft: { ...draft, placements: [], splines: [] } },
     { label: "Monuments", draft: { ...draft, splines: [] } },
     { label: "Roads", draft },
+  ];
+}
+
+const STRUCTURE = /foundation|wall|gate|tower|hangar|dome|bunker|bridge|pad|platform|barracks|warehouse/i;
+const PROPS = /lamp|light|crate|barrel|clutter|prop|sign|antenna|shelf|bench|vending/i;
+
+function monumentStages(draft: WizardDraft): { label: string; draft: WizardDraft }[] {
+  const structures = draft.placements.filter((placement) => STRUCTURE.test(placement.name));
+  const base = structures.length
+    ? structures
+    : draft.placements.slice(0, Math.max(1, Math.ceil(draft.placements.length / 2)));
+  const puzzlePlacements = draft.placements.filter((placement) => !PROPS.test(placement.name));
+  return [
+    {
+      label: "Base structure",
+      draft: { ...draft, placements: base, splines: [], selectedPlacementId: base[0]?.id ?? null },
+    },
+    {
+      label: "Puzzles & loot",
+      draft: {
+        ...draft,
+        placements: puzzlePlacements.length ? puzzlePlacements : draft.placements,
+        splines: [],
+      },
+    },
+    { label: "Lighting & props", draft },
+  ];
+}
+
+function skinStages(draft: WizardDraft): { label: string; draft: WizardDraft }[] {
+  const base = {
+    ...draft,
+    skin: {
+      ...draft.skin,
+      decals: [],
+      wear: {
+        ...draft.skin.wear,
+        edgeWear: 0,
+        grunge: 0,
+        dirt: 0,
+        scratches: 0,
+        emissionStrength: 0,
+        showSeams: false,
+      },
+    },
+  };
+  const patterns = {
+    ...draft,
+    skin: { ...draft.skin, wear: { ...draft.skin.wear, emissionStrength: 0 } },
+  };
+  return [
+    { label: "Base coat", draft: base },
+    { label: "Wear & patterns", draft: patterns },
+    { label: "Emission & studio light", draft },
   ];
 }
 
@@ -32,6 +102,32 @@ const SUGGESTIONS = [
 ];
 
 const MAX_ATTACHMENTS = 6;
+
+/** Sentences that ask for a whole project belong to the legacy generator. */
+function wantsFullProject(text: string): boolean {
+  return /\b(build|project|base|outpost|loot|npcs?|full map|everything|town|compound|village|monuments?|forest|dense)\b/i.test(
+    text,
+  ) && !text.trim().startsWith("/");
+}
+
+/** Chips that re-run a command, plus a bumped numeric variation. */
+function receiptChips(commands: ParsedCommand[]): { label: string; prompt: string }[] {
+  return commands.flatMap((command) => {
+    const base = commandToPrompt(command);
+    const chips = [{ label: `Re-run ${commandLabel(command.id)}`, prompt: base }];
+    for (const [key, value] of Object.entries(command.args)) {
+      if (typeof value === "number" && key !== "seed") {
+        const bumped = { ...command, args: { ...command.args, [key]: value + (key === "count" ? 2 : 500) } };
+        chips.push({
+          label: `${commandLabel(command.id)} ${key} ${value} → ${value + (key === "count" ? 2 : 500)}`,
+          prompt: commandToPrompt(bumped),
+        });
+        break;
+      }
+    }
+    return chips;
+  });
+}
 
 const COMMAND_SUGGESTIONS = [
   "generate 4.5k island with snow mountain north and river through center",
@@ -70,11 +166,14 @@ export function KobaPanel({
   open,
   onClose,
   onStageFocus,
+  onAppEffects,
 }: {
   open: boolean;
   onClose: () => void;
   /** Camera framing hook for each live-build stage (App owns the viewport). */
   onStageFocus?: (draft: WizardDraft, stage: number) => void;
+  /** Branding, snippet and promo commands live in App state, not the draft. */
+  onAppEffects?: (effects: AppEffect[]) => Promise<string[]>;
 }) {
   const {
     state,
@@ -96,6 +195,18 @@ export function KobaPanel({
   const [attachments, setAttachments] = useState<KobaAttachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [queueCount, setQueueCount] = useState(0);
+  const queueRef = useRef<string[]>([]);
+
+  // FIFO: a prompt typed while a build runs waits, then runs automatically.
+  useEffect(() => {
+    if (busy || adding) return;
+    const next = queueRef.current.shift();
+    if (!next) return;
+    setQueueCount(queueRef.current.length);
+    void send(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, adding]);
   const [dragging, setDragging] = useState(false);
   const [autoExport, setAutoExport] = useState(true);
   const [catalog, setCatalog] = useState<PrefabAsset[]>([]);
@@ -225,9 +336,16 @@ export function KobaPanel({
   };
 
   const send = async (override?: string) => {
-    if (busy || adding) return;
     const text = (override ?? prompt).trim();
     if (!text && attachments.length === 0) return;
+    if (busy || adding) {
+      if (!text) return;
+      queueRef.current.push(text);
+      setQueueCount(queueRef.current.length);
+      append({ role: "user", text });
+      setPrompt("");
+      return;
+    }
     const sentAttachments = attachments;
     const names = sentAttachments.map((attachment) => attachment.name);
 
@@ -241,6 +359,123 @@ export function KobaPanel({
     await new Promise((resolve) => window.setTimeout(resolve, 180));
 
     try {
+      const segments = splitSegments(text);
+      const routed = segments.map((segment) => ({
+        segment,
+        effects: parseAppSegment(segment),
+        command: parsePromptSegment(segment, state.draft.projectKind),
+      }));
+      const appEffects = routed.flatMap((entry) => entry.effects ?? []);
+      const draftCommands = routed.filter((entry) => !entry.effects && entry.command);
+
+      const onlyTerrainCommand =
+        draftCommands.length === 1 && draftCommands[0]?.command?.id === "map.generate";
+      const legacyProjectRequest =
+        appEffects.length === 0 &&
+        draftCommands.length <= 1 &&
+        (draftCommands.length === 0 || onlyTerrainCommand) &&
+        (wantsFullProject(text) || sentAttachments.length > 0);
+
+      if (!legacyProjectRequest && (appEffects.length > 0 || draftCommands.length > 0)) {
+        const receipts: string[] = [];
+        let commandDraft = state.draft;
+        let lastStep: WizardStepId = "terrain";
+        let commandIndex = 0;
+        let commandCancelled = false;
+
+        if (draftCommands.length > 0) {
+          beginStagedBuild();
+          buildRun.current = { cancelled: false, paused: false };
+          setBuilding({
+            steps: draftCommands.map((entry) => ({
+              label: commandLabel(entry.command!.id),
+              status: "pending",
+            })),
+            paused: false,
+          });
+        }
+
+        for (const entry of routed) {
+          if (entry.effects) {
+            const applied = onAppEffects ? await onAppEffects(entry.effects) : ["App commands need the desktop shell."];
+            receipts.push(...applied);
+            continue;
+          }
+          if (!entry.command) {
+            receipts.push(`Could not parse: ${entry.segment}`);
+            continue;
+          }
+          const outcome = applyCommand(entry.command, commandDraft, { catalog });
+          commandDraft = outcome.draft;
+          lastStep = outcome.step;
+          receipts.push(outcome.receipt);
+          if (draftCommands.length > 0) {
+            const index = commandIndex;
+            setBuilding((current) =>
+              current
+                ? {
+                    ...current,
+                    steps: current.steps.map((step, stepIndex) => ({
+                      ...step,
+                      status: stepIndex < index ? "done" : stepIndex === index ? "running" : "pending",
+                    })),
+                  }
+                : current,
+            );
+            applyStagedDraft(commandDraft, outcome.step);
+            onStageFocus?.(commandDraft, index);
+            commandIndex += 1;
+            if (!(await waitStage(360))) {
+              commandCancelled = true;
+              break;
+            }
+          }
+        }
+
+        buildRun.current = null;
+        setBuilding(null);
+        if (commandCancelled) {
+          cancelStagedBuild();
+          append({ role: "assistant", text: "Command batch stopped. The project is back to how it was before this prompt." });
+          setBusy(false);
+          return;
+        }
+        if (draftCommands.length > 0) {
+          finishStagedBuild(commandDraft, lastStep);
+          void refreshProjectThumbnail(commandDraft).catch(() => {
+            // Cards still fall back to proxy art when the real GLB cache is empty.
+          });
+        }
+        const batchLabel = draftCommands.map((entry) => commandLabel(entry.command!.id)).join(", ");
+        append({
+          role: "assistant",
+          text: `Ran ${receipts.length} step${receipts.length === 1 ? "" : "s"}:\n${receipts
+            .map((line) => `• ${line}`)
+            .join("\n")}`,
+          undo: draftCommands.length > 0,
+          undoLabel: batchLabel || undefined,
+          chips: receiptChips(draftCommands.map((entry) => entry.command!)),
+        });
+        setBusy(false);
+        return;
+      }
+
+      if (!legacyProjectRequest && appEffects.length === 0 && draftCommands.length === 0) {
+        append({
+          role: "assistant",
+          text: "I could not find an action in that sentence. Try one of these:",
+          chips: [
+            { label: "Make a 4.5k arctic island", prompt: "/map.generate size=4500 biome=arctic" },
+            { label: "Place 3 harbors on the coast", prompt: "/map.placeMonument type=harbor count=3 location=coast" },
+            { label: "Connect a ring road", prompt: "/map.connectRoads ringRoad=true" },
+            { label: "Dig an 80 m tunnel north", prompt: "/cave.extrudeSpline direction=north length=80 preset=mineshaft" },
+            { label: "Watermark at 30%", prompt: "/watermark opacity=30%" },
+          ],
+        });
+        setBusy(false);
+        return;
+      }
+
       const result = generateProject(
         text || "Build from the attached files.",
         sentAttachments,
@@ -324,6 +559,7 @@ export function KobaPanel({
         exportBytes,
         error: Boolean(exportError),
         undo: true,
+        undoLabel: result.name,
       });
       if (exportError) {
         append({
@@ -416,7 +652,7 @@ export function KobaPanel({
                 {message.undo && canUndo && (
                   <div className="koba-chips">
                     <button type="button" onClick={undo}>
-                      Undo build
+                      Undo build{message.undoLabel ? ` · ${message.undoLabel}` : ""}
                     </button>
                   </div>
                 )}
@@ -563,6 +799,12 @@ export function KobaPanel({
             }}
           />
 
+          {queueCount > 0 && (
+            <div className="koba-queue-pill" role="status">
+              Queued ({queueCount})
+            </div>
+          )}
+
           {autocomplete.length > 0 && (
             <div className="koba-autocomplete" role="listbox" aria-label="Command suggestions">
               {autocomplete.map((suggestion) => (
@@ -591,8 +833,12 @@ export function KobaPanel({
               <span>Auto-export</span>
               <em>{preview ? "simulated in browser" : "writes immediately"}</em>
             </label>
-            <Button variant="primary" onClick={() => void send()} disabled={!canSend}>
-              {busy ? "Generating" : "Generate"}
+            <Button
+              variant="primary"
+              onClick={() => void send()}
+              disabled={adding || (!prompt.trim() && attachments.length === 0)}
+            >
+              {busy ? (prompt.trim() ? "Queue prompt" : "Generating") : "Generate"}
             </Button>
           </div>
         </div>

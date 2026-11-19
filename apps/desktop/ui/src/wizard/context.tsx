@@ -293,7 +293,11 @@ export function WizardProvider({ children }: { children: ReactNode }) {
       options?: { seedPlacements?: PrefabPlacement[]; step?: WizardStepId },
     ) => {
       if (kind === state.draft.projectKind) return;
-      workspaces.current[state.draft.projectKind] = state;
+      // Walk mode is a transient camera state; never carry it across tabs.
+      workspaces.current[state.draft.projectKind] = {
+        ...state,
+        draft: { ...state.draft, walkMode: false },
+      };
       // Monument edits made on prefabs opened from the map flow back into the
       // map copies with the same placement id, whichever tab is opened next.
       if (state.draft.projectKind === "monument") {
@@ -323,6 +327,7 @@ export function WizardProvider({ children }: { children: ReactNode }) {
             draft: {
               ...saved.draft,
               placements,
+              walkMode: false,
               selectedPlacementId: seeds[0]?.id ?? saved.draft.selectedPlacementId,
             },
           },

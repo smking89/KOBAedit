@@ -24,7 +24,9 @@ export function syncSharedPlacements(
       source.rotationEuler.x === placement.rotationEuler.x &&
       source.rotationEuler.y === placement.rotationEuler.y &&
       source.rotationEuler.z === placement.rotationEuler.z &&
-      source.scale === placement.scale;
+      source.scale.x === placement.scale.x &&
+      source.scale.y === placement.scale.y &&
+      source.scale.z === placement.scale.z;
     if (same) return placement;
     changed = true;
     return {
@@ -32,7 +34,7 @@ export function syncSharedPlacements(
       name: source.name,
       position: { ...source.position },
       rotationEuler: { ...source.rotationEuler },
-      scale: source.scale,
+      scale: { ...source.scale },
     };
   });
   return changed ? next : mapPlacements;

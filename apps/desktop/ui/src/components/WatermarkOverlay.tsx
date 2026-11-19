@@ -24,10 +24,27 @@ export function WatermarkOverlay({
     ["--wm-padding" as string]: `${settings.padding}px`,
   } as React.CSSProperties;
 
-  if (settings.anchor === "tiled" && settings.source === "logo" && logo) {
+  if (settings.anchor === "tiled") {
+    if (settings.source === "logo" && logo) {
+      return (
+        <div className={`watermark-layer wm-tiled ${tint}`} style={style} aria-hidden="true">
+          <div className="wm-tile" style={{ backgroundImage: `url(${logo})` }} />
+        </div>
+      );
+    }
     return (
-      <div className={`watermark-layer wm-tiled ${tint}`} style={style} aria-hidden="true">
-        <div className="wm-tile" style={{ backgroundImage: `url(${logo})` }} />
+      <div className={`watermark-layer wm-tiled wm-tiled-text ${tint}`} style={style} aria-hidden="true">
+        <div className="wm-text-grid">
+          {Array.from({ length: 24 }, (_, index) => (
+            <span
+              key={index}
+              className="wm-text"
+              style={{ fontSize: `${Math.round(settings.scale * 150)}px` }}
+            >
+              {settings.text}
+            </span>
+          ))}
+        </div>
       </div>
     );
   }

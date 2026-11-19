@@ -50,4 +50,6 @@ export interface KobaMessage {
   chips?: { label: string; prompt: string }[];
   /** Prompt-build receipt: one-click undo for the whole animated build. */
   undo?: boolean;
+  /** Human name of the batch, e.g. "Place 3 harbors". */
+  undoLabel?: string;
 }

@@ -7,23 +7,25 @@ import type { PrefabPlacement } from "../src/wizard/types.ts";
 function placement(id: string, x: number, name = `Prefab ${id}`): PrefabPlacement {
   return {
     id,
+    assetId: `assets/${id}.prefab`,
     name,
-    prefabId: `assets/${id}.prefab`,
     position: { x, y: 0, z: 0 },
     rotationEuler: { x: 0, y: 0, z: 0 },
-    scale: 1,
+    scale: { x: 1, y: 1, z: 1 },
+    parentId: null,
+    collisionRadius: 10,
+    collisionHeight: 6,
     flatten: true,
     flattenRadius: 20,
     flattenFalloff: 8,
-    collisionRadius: 10,
-    bounds: { min: [-5, -1, -5], max: [5, 5, 5] },
-    category: "Monument",
-    topologyFlags: [],
-    lootTier: null,
-    hasIO: false,
-    hasLoot: false,
-    hasNpc: false,
-  } as unknown as PrefabPlacement;
+    clearFoliage: true,
+    noBuildZone: true,
+    lootTier: 2,
+    lootProfile: "",
+    ioWiring: "",
+    npcCount: 0,
+    locked: false,
+  };
 }
 
 test("monument edits on a shared id flow back to the map copy", () => {
@@ -46,6 +48,20 @@ test("monument-only placements never leak onto the map", () => {
   const synced = syncSharedPlacements(map, monument);
   assert.equal(synced.length, 1);
   assert.equal(synced, map);
+});
+
+test("non-uniform scale edits reach the map copy without aliasing", () => {
+  const map = [placement("a", 10)];
+  const monument = [
+    {
+      ...placement("a", 10),
+      scale: { x: 2, y: 1, z: 1 },
+    },
+  ];
+  const synced = syncSharedPlacements(map, monument);
+  assert.notEqual(synced, map);
+  assert.deepEqual(synced[0].scale, { x: 2, y: 1, z: 1 });
+  assert.notEqual(synced[0].scale, monument[0].scale);
 });
 
 test("unchanged placements keep array identity", () => {

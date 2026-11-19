@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { TourAudio } from "../lib/promo";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
@@ -287,7 +288,7 @@ export class TerrainViewport {
     this.host.dataset.qualityPixelRatio = String(this.quality.pixelRatio);
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0b0e12);
+    this.scene.background = new THREE.Color(0x090a0c);
     this.scene.fog = new THREE.Fog(0x0b0e12, 1600, 5200);
 
     this.camera = new THREE.PerspectiveCamera(48, 1, 0.5, 12000);
@@ -1454,6 +1455,182 @@ export class TerrainViewport {
     return this.walkKeys.has(code) || this.walkVirtual.has(code);
   }
 
+  /** Theme backdrop only; camera, build and walk state are untouched. */
+  setBackdrop(theme: "dark" | "light"): void {
+    const color = new THREE.Color(theme === "light" ? 0xe9ecef : 0x090a0c);
+    if (this.scene.background instanceof THREE.Color) {
+      this.scene.background.copy(color);
+    } else {
+      this.scene.background = color;
+    }
+    this.requestRender();
+  }
+
+  /** Renders the current view without UI helpers and copies it to a 2D canvas. */
+  captureFrame(): HTMLCanvasElement | null {
+    if (!this.renderer) return null;
+    const grid = this.grid;
+    const gridVisible = grid?.visible ?? false;
+    if (grid) grid.visible = false;
+    this.renderer.render(this.scene, this.camera);
+    const source = this.renderer.domElement;
+    const output = document.createElement("canvas");
+    output.width = source.width;
+    output.height = source.height;
+    output.getContext("2d")?.drawImage(source, 0, 0);
+    if (grid) grid.visible = gridVisible;
+    this.requestRender();
+    return output;
+  }
+
+  /**
+   * Records a camera tour to WebM. Each shot orbits its own focus; the caller
+   * draws the watermark into `draw` so the recording matches the preview.
+   */
+  async recordTour(options: {
+    shots: { x: number; z: number; radius: number; seconds: number }[];
+    draw?: (ctx: CanvasRenderingContext2D, width: number, height: number, progress: number) => void;
+    onProgress?: (progress: number) => void;
+    audio?: TourAudio | null;
+  }): Promise<Blob | null> {
+    if (!this.renderer || !options.shots.length) return null;
+    const source = this.renderer.domElement;
+    const output = document.createElement("canvas");
+    output.width = source.width;
+    output.height = source.height;
+    const ctx = output.getContext("2d");
+    const canRecord =
+      typeof MediaRecorder !== "undefined" &&
+      typeof (output as HTMLCanvasElement & { captureStream?: unknown }).captureStream === "function";
+    if (!ctx || !canRecord) return null;
+
+    const grid = this.grid;
+    const gridVisible = grid?.visible ?? false;
+    if (grid) grid.visible = false;
+    const savedPosition = this.camera.position.clone();
+    const savedTarget = this.controls.target.clone();
+    const savedControls = this.controls.enabled;
+    this.controls.enabled = false;
+
+    const mime =
+      typeof MediaRecorder.isTypeSupported === "function"
+        ? ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find((type) =>
+            MediaRecorder.isTypeSupported(type),
+          )
+        : undefined;
+    const stream = output.captureStream(60);
+    const total = options.shots.reduce((sum, shot) => sum + shot.seconds, 0);
+    let audioContext: AudioContext | null = null;
+    if (options.audio) {
+      try {
+        const context = new AudioContext();
+        audioContext = context;
+        void context.resume().catch(() => {});
+        const mix = context.createMediaStreamDestination();
+        const gain = context.createGain();
+        const playback = Math.min(
+          total,
+          Math.max(0.2, options.audio.trimEnd - options.audio.trimStart),
+        );
+        const volume = Math.min(1, Math.max(0, options.audio.volume));
+        const fadeIn = Math.max(0, Math.min(options.audio.fadeIn, playback / 2));
+        const fadeOut = Math.max(0, Math.min(options.audio.fadeOut, playback - fadeIn));
+        const now = context.currentTime;
+        gain.gain.setValueAtTime(fadeIn > 0 ? 0 : volume, now);
+        if (fadeIn > 0) gain.gain.linearRampToValueAtTime(volume, now + fadeIn);
+        gain.gain.setValueAtTime(volume, now + Math.max(fadeIn, playback - fadeOut));
+        gain.gain.linearRampToValueAtTime(0, now + playback);
+        const track = context.createBufferSource();
+        track.buffer = options.audio.buffer;
+        track.loop = playback > Math.max(0.1, options.audio.trimEnd - options.audio.trimStart);
+        track.connect(gain);
+        gain.connect(mix);
+        const offset = Math.min(
+          Math.max(0, options.audio.trimStart),
+          Math.max(0, options.audio.buffer.duration - 0.1),
+        );
+        track.start(now, offset, playback);
+        mix.stream.getAudioTracks().forEach((audioTrack) => stream.addTrack(audioTrack));
+      } catch {
+        audioContext = null;
+      }
+    }
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(
+        stream,
+        mime ? { mimeType: mime, videoBitsPerSecond: 8_000_000 } : undefined,
+      );
+    } catch {
+      // Fallback: let the browser choose its default container.
+      try {
+        recorder = new MediaRecorder(stream);
+      } catch {
+        stream.getTracks().forEach((track) => track.stop());
+        if (audioContext) void audioContext.close();
+        this.camera.position.copy(savedPosition);
+        this.controls.target.copy(savedTarget);
+        this.controls.enabled = savedControls;
+        if (grid) grid.visible = gridVisible;
+        this.requestRender();
+        return null;
+      }
+    }
+    const chunks: BlobPart[] = [];
+    recorder.ondataavailable = (event) => {
+      if (event.data.size) chunks.push(event.data);
+    };
+    const finished = new Promise<Blob>((resolve) => {
+      recorder.onstop = () => resolve(new Blob(chunks, { type: "video/webm" }));
+    });
+    recorder.start(250);
+
+    const unit = new THREE.Vector3();
+    await new Promise<void>((resolve) => {
+      const started = performance.now();
+      const tick = () => {
+        const elapsed = (performance.now() - started) / 1000;
+        let remaining = elapsed;
+        let shot = options.shots[0];
+        for (const candidate of options.shots) {
+          if (remaining <= candidate.seconds) {
+            shot = candidate;
+            break;
+          }
+          remaining -= candidate.seconds;
+          shot = candidate;
+        }
+        const focus = new THREE.Vector3(shot.x, this.controls.target.y, shot.z);
+        const angle = (remaining / Math.max(0.001, shot.seconds)) * Math.PI * 2;
+        unit.set(Math.sin(angle), 0.42, Math.cos(angle)).normalize();
+        this.camera.position.copy(focus).add(unit.multiplyScalar(Math.max(40, shot.radius)));
+        this.camera.lookAt(focus);
+        this.renderer.render(this.scene, this.camera);
+        ctx.drawImage(source, 0, 0);
+        const progress = Math.min(1, total === 0 ? 1 : elapsed / total);
+        options.draw?.(ctx, output.width, output.height, progress);
+        options.onProgress?.(progress);
+        if (elapsed >= total) {
+          resolve();
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      tick();
+    });
+
+    recorder.stop();
+    const blob = await finished;
+    stream.getTracks().forEach((track) => track.stop());
+    if (audioContext) void audioContext.close();
+    this.camera.position.copy(savedPosition);
+    this.controls.target.copy(savedTarget);
+    this.controls.enabled = savedControls;
+    if (grid) grid.visible = gridVisible;
+    this.requestRender();
+    return blob;
+  }
+
   /** Smoothly frame a point; used while a prompt build drops monuments. */
   focusOn(x: number, z: number, radius: number): void {
     if (this.walkMode) return;
@@ -1534,6 +1711,14 @@ export class TerrainViewport {
     }
   }
 
+  /** Browser drops pointer lock (Esc, tab switch) -> tell the app to leave walk mode. */
+  private onPointerLockChange = (): void => {
+    if (!this.walkMode) return;
+    if (document.pointerLockElement !== this.renderer.domElement) {
+      this.handlers.onExitWalk?.();
+    }
+  };
+
   private setWalkMode(enabled: boolean): void {
     if (enabled === this.walkMode) return;
     this.walkMode = enabled;
@@ -1560,6 +1745,7 @@ export class TerrainViewport {
       document.addEventListener("keydown", this.onWalkKeyDown);
       document.addEventListener("keyup", this.onWalkKeyUp);
       document.addEventListener("mousemove", this.onWalkMouseMove);
+      document.addEventListener("pointerlockchange", this.onPointerLockChange);
       this.lastFrameTime = performance.now();
       this.renderer.domElement.focus();
           } else {
@@ -1579,6 +1765,7 @@ export class TerrainViewport {
       document.removeEventListener("keydown", this.onWalkKeyDown);
       document.removeEventListener("keyup", this.onWalkKeyUp);
       document.removeEventListener("mousemove", this.onWalkMouseMove);
+      document.removeEventListener("pointerlockchange", this.onPointerLockChange);
       this.walkKeys.clear();
       if (document.pointerLockElement === this.renderer.domElement) {
         void document.exitPointerLock();

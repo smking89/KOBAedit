@@ -4161,3 +4161,745 @@ input[type="range"]::-moz-range-thumb {
   line-height: 1.5;
   color: rgba(231, 237, 242, 0.55);
 }
+
+/* Snippet toast */
+.snippet-toast {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  z-index: 60;
+  padding: 8px 12px;
+  border-left: 2px solid var(--accent, #f80801);
+  background: rgba(10, 13, 17, 0.92);
+  color: #e7edf2;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+}
+
+/* Promo studio panel */
+.promo-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 41;
+  width: min(420px, 94vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 18px 24px;
+  background: #10141a;
+  border-left: 1px solid var(--border);
+  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.35);
+  transform: translateX(102%);
+  transition: transform 240ms ease;
+  overflow-y: auto;
+}
+
+.promo-panel.is-open {
+  transform: translateX(0);
+}
+
+.promo-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.promo-eyebrow {
+  margin: 0 0 2px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent, #f80801);
+}
+
+.promo-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.promo-body {
+  display: grid;
+  gap: 16px;
+}
+
+.promo-block {
+  display: grid;
+  gap: 8px;
+}
+
+.promo-block h3 {
+  margin: 0;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(231, 237, 242, 0.6);
+}
+
+.promo-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.promo-row select {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #0b0d10;
+  color: #e7edf2;
+  font-size: 11px;
+}
+
+.promo-meta {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.5;
+  color: rgba(231, 237, 242, 0.55);
+}
+
+.promo-waveform {
+  width: 100%;
+  height: 56px;
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #0b0d10;
+}
+
+.promo-sliders {
+  display: grid;
+  gap: 6px;
+  font-size: 10px;
+  color: rgba(231, 237, 242, 0.75);
+}
+
+.promo-sliders label {
+  display: grid;
+  gap: 2px;
+}
+
+.promo-sliders input {
+  width: 100%;
+  accent-color: #f80801;
+}
+
+.promo-cues {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.promo-cues li {
+  display: grid;
+  gap: 4px;
+  padding: 6px 8px;
+  border-left: 2px solid rgba(248, 8, 1, 0.4);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 11px;
+}
+
+.promo-cue-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.promo-cue-head span {
+  color: rgba(231, 237, 242, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+
+.promo-cue-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 9px;
+  color: rgba(231, 237, 242, 0.6);
+}
+
+.promo-cue-controls button {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.promo-cue-controls label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.promo-cue-controls input {
+  width: 64px;
+  accent-color: #f80801;
+}
+
+.promo-export {
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 4px;
+  background: #f80801;
+  color: #ffffff;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.promo-export:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.promo-note {
+  margin: 0;
+  font-size: 10px;
+  color: #d7a44a;
+}
+
+/* Tiled text proof: same density language as the tiled logo. */
+.wm-tiled-text {
+  display: block;
+}
+
+.wm-tiled-text .wm-text-grid {
+  position: absolute;
+  inset: var(--wm-padding, 20px);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-content: space-around;
+  justify-items: center;
+  gap: 18px;
+  opacity: var(--wm-opacity, 0.5);
+  overflow: hidden;
+}
+
+/* Queued prompt pill */
+.koba-queue-pill {
+  align-self: flex-start;
+  padding: 3px 9px;
+  border: 1px solid #3a5e80;
+  border-radius: 999px;
+  background: rgba(58, 94, 128, 0.18);
+  color: #9ec3e6;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ==========================================================================
+   Theme system — Deep Studio Dark / Signature KOBA Light, frameless surfaces
+   ========================================================================== */
+
+:root {
+  --bg: #0d0e11;
+  --bg-elevated: #16181d;
+  --panel: #0d0e11;
+  --panel-strong: #16181d;
+  --panel-hover: #16181d;
+  --border: #23262c;
+  --border-soft: #1b1e24;
+  --text: #ffffff;
+  --text-dim: #c7ccd4;
+  --muted: #8e95a2;
+  --faint: #6b7280;
+  --accent: #f80801;
+  --accent-soft: rgba(248, 8, 1, 0.12);
+  --accent-line: rgba(248, 8, 1, 0.4);
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-elevated: #f4f5f7;
+  --panel: #ffffff;
+  --panel-strong: #f4f5f7;
+  --panel-hover: #f4f5f7;
+  --border: #e6e8ec;
+  --border-soft: #eef0f3;
+  --text: #000000;
+  --text-dim: #2c2f35;
+  --muted: #5a606a;
+  --faint: #8b9099;
+  --accent: #f80801;
+  --accent-soft: rgba(248, 8, 1, 0.08);
+  --accent-line: rgba(248, 8, 1, 0.36);
+  color-scheme: light;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  transition: background-color 220ms ease, color 220ms ease;
+}
+
+.topbar,
+.inspector,
+.asset-panel,
+.koba-panel,
+.promo-panel,
+.branding-panel,
+.steps-nav {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.topbar {
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* Single hairline dividers between sidebar, viewport and inspector. */
+.steps-nav,
+.left-rail {
+  border-right: 1px solid var(--border-soft);
+}
+
+.inspector {
+  border-left: 1px solid var(--border-soft);
+}
+
+/* No boxes inside the inspector, asset browser or validation report. */
+.inspector *,
+.asset-panel *,
+.validation-report *,
+.koba-messages *,
+.promo-body * {
+  box-shadow: none !important;
+}
+
+.inspector :where(section, article, div, li, fieldset, header, footer, label, table, td, th),
+.asset-panel :where(section, article, div, li, fieldset, header, footer, label),
+.validation-report :where(section, article, div, li, header, footer) {
+  border-color: transparent !important;
+}
+
+.inspector :where(h3, h4, .section-label),
+.asset-panel :where(h3, h4, .section-label) {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 18px;
+}
+
+.inspector :where(input, select, textarea),
+.asset-panel :where(input, select, textarea),
+.koba-compose textarea {
+  background: var(--bg-elevated) !important;
+  border: 0 !important;
+  border-radius: 4px;
+  color: var(--text);
+}
+
+/* Mode tabs: borderless text links with a thin red active underline. */
+.mode-tabs {
+  background: transparent !important;
+  border: 0 !important;
+  gap: 22px;
+}
+
+.mode-tab {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 8px 0 !important;
+  color: var(--muted) !important;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 10px;
+}
+
+.mode-tab:hover {
+  color: var(--text) !important;
+}
+
+.mode-tab.is-active {
+  color: var(--text) !important;
+  background: transparent !important;
+}
+
+.mode-tab.is-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--accent);
+}
+
+/* Sliders: thin track, red thumb, no container box. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  background: transparent !important;
+  border: 0 !important;
+  accent-color: var(--accent);
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--muted) 34%, transparent);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -4.5px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+input[type="range"]::-moz-range-track {
+  height: 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--muted) 34%, transparent);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Floating glass HUD strips instead of solid rectangles. */
+.lighting-strip {
+  background: rgba(13, 14, 17, 0.55) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 0 !important;
+  border-radius: 10px;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .lighting-strip {
+  background: rgba(255, 255, 255, 0.6) !important;
+}
+
+.studio-hint,
+.viewport-note,
+.viewport-hud > div {
+  background: rgba(13, 14, 17, 0.55) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .studio-hint,
+:root[data-theme="light"] .viewport-note,
+:root[data-theme="light"] .viewport-hud > div {
+  background: rgba(255, 255, 255, 0.62) !important;
+}
+
+/* Light-mode overrides for surfaces that used hard-coded charcoal. */
+:root[data-theme="light"] .koba-head,
+:root[data-theme="light"] .koba-compose,
+:root[data-theme="light"] .koba-messages,
+:root[data-theme="light"] .promo-panel,
+:root[data-theme="light"] .promo-cues li,
+:root[data-theme="light"] .branding-panel,
+:root[data-theme="light"] .asset-panel,
+:root[data-theme="light"] .inspector,
+:root[data-theme="light"] .topbar,
+:root[data-theme="light"] .snippet-toast {
+  background: var(--bg) !important;
+  color: var(--text);
+}
+
+:root[data-theme="light"] .koba-msg.is-user .koba-bubble {
+  background: var(--bg-elevated) !important;
+  color: var(--text);
+}
+
+/* Theme toggle button (frameless). */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.theme-toggle:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.theme-toggle svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+/* ==========================================================================
+   Startup splash — full-bleed artwork, red edge progress, no frames
+   ========================================================================== */
+
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  overflow: hidden;
+  background: #0d0e11;
+  color: #ffffff;
+  opacity: 1;
+  transition: opacity 400ms ease;
+}
+
+.splash.is-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.splash-stage {
+  position: absolute;
+  inset: 0;
+}
+
+.splash-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 900ms ease;
+}
+
+.splash-art.is-active {
+  opacity: 1;
+}
+
+.splash-shade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(13, 14, 17, 0.85) 0%, transparent 45%);
+}
+
+.splash-brand {
+  position: absolute;
+  left: 42px;
+  bottom: 40px;
+  display: grid;
+  gap: 8px;
+}
+
+.splash-brand img {
+  width: 190px;
+  height: auto;
+  filter: brightness(0) invert(1);
+}
+
+.splash-brand p {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.splash-status {
+  position: absolute;
+  right: 42px;
+  bottom: 44px;
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.splash-step {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.splash-percent {
+  font-family: var(--mono, monospace);
+  font-size: 16px;
+  color: #ffffff;
+}
+
+.splash-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.splash-bar span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: #f80801;
+  transition: width 120ms linear;
+}
+
+/* Walk Mode in-game HUD preview */
+.walk-hud {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  font-family: var(--sans);
+  color: #ffffff;
+}
+
+.walk-notices {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.walk-notice {
+  padding: 4px 10px;
+  border-left: 2px solid #f80801;
+  background: rgba(13, 14, 17, 0.62);
+  backdrop-filter: blur(10px);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.walk-notice.is-ok {
+  border-left-color: #55b880;
+}
+
+.walk-notice.is-warn {
+  border-left-color: #d9a24b;
+}
+
+.walk-wallet {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  display: flex;
+  gap: 12px;
+  padding: 4px 10px;
+  background: rgba(13, 14, 17, 0.55);
+  backdrop-filter: blur(10px);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.walk-pending {
+  color: #d9a24b;
+}
+
+.walk-panel {
+  position: absolute;
+  top: 62px;
+  right: 18px;
+  width: min(340px, 46vw);
+  padding: 12px 14px;
+  background: rgba(13, 14, 17, 0.78);
+  backdrop-filter: blur(14px);
+  pointer-events: auto;
+}
+
+.walk-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.walk-panel ul {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.walk-panel li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.walk-panel button {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: #f80801;
+  color: #ffffff;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.walk-panel button:disabled {
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.walk-trade {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.walk-chat {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  width: min(420px, 52vw);
+  display: grid;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.walk-chat-log {
+  display: grid;
+  gap: 2px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.walk-chat input {
+  width: 100%;
+  padding: 6px 9px;
+  border: 0;
+  background: rgba(13, 14, 17, 0.62);
+  backdrop-filter: blur(10px);
+  color: #ffffff;
+  font-size: 11px;
+}
+
+.walk-chat input::placeholder {
+  color: rgba(255, 255, 255, 0.45);
+}

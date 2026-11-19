@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { cancelPrefabExtraction, type TaskProgress } from "../lib/ipc";
 import type { TerrainStroke, WizardDraft, WizardStepId } from "../wizard/types";
+import type { TourAudio } from "../lib/promo";
 import { SkinViewport } from "./SkinViewport";
 import { TerrainViewport, type BuildPlanStatus, type DragGhost } from "./TerrainViewport";
 
@@ -14,6 +15,15 @@ export interface GroundTools {
   clearBuilds: () => void;
   /** Smooth camera framing for the live prompt build. */
   focus: (x: number, z: number, radius: number) => void;
+  /** Snippet capture: current frame with UI helpers hidden. */
+  captureFrame: () => HTMLCanvasElement | null;
+  /** Snippet/promo recording to WebM with a watermark painter. */
+  recordTour: (options: {
+    shots: { x: number; z: number; radius: number; seconds: number }[];
+    draw?: (ctx: CanvasRenderingContext2D, width: number, height: number, progress: number) => void;
+    onProgress?: (progress: number) => void;
+    audio?: TourAudio | null;
+  }) => Promise<Blob | null>;
   /** Touch overlay thumbstick and jump input for Walk Mode. */
   setWalkInput: (input: {
     forward?: number;
@@ -24,6 +34,7 @@ export interface GroundTools {
 }
 
 export function Viewport({
+  theme = "dark",
   draft,
   stepId,
   onSculpt,
@@ -38,6 +49,7 @@ export function Viewport({
   onWalkCollision,
   onOpenPlacement,
 }: {
+  theme?: "dark" | "light";
   draft: WizardDraft;
   stepId: WizardStepId;
   onSculpt: (strokes: TerrainStroke[]) => void;
@@ -64,6 +76,10 @@ export function Viewport({
     progress: null,
     running: false,
   });
+  useEffect(() => {
+    worldRef.current?.setBackdrop(theme);
+  }, [theme]);
+
   const callbacks = useRef({
     onSculpt,
     onPaint,
@@ -123,6 +139,8 @@ export function Viewport({
           clearBuilds: () => viewport.clearTestBuilds(),
           setWalkInput: (input) => viewport.setWalkInput(input),
           focus: (x, z, radius) => viewport.focusOn(x, z, radius),
+          captureFrame: () => viewport.captureFrame(),
+          recordTour: (options) => viewport.recordTour(options),
         });
         return () => {
           callbacks.current.onGroundPicker?.(null);
