@@ -1476,6 +1476,7 @@ export class TerrainViewport {
     this.controls.target.copy(target);
     this.camera.lookAt(target);
     this.controls.update();
+    this.host.dataset.camera = "radar";
     this.requestRender();
   }
 
@@ -1488,6 +1489,7 @@ export class TerrainViewport {
     this.controls.target.copy(saved.target);
     this.camera.lookAt(saved.target);
     this.controls.update();
+    delete this.host.dataset.camera;
     this.requestRender();
   }
 

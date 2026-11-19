@@ -49,6 +49,13 @@ const LANDMARKS = [
 
 const LOCATIONS = ["north", "south", "east", "west", "center", "centre", "coast", "coastal"];
 
+/** Canonical slot vocab, shared with autocomplete so the two can't drift. */
+export const BIOME_NAMES = Array.from(new Set(BIOMES.map((entry) => entry.biome)));
+export const LOCATION_NAMES = ["center", "coast", "north", "south", "east", "west"];
+export const CAVE_PRESETS = ["mineshaft", "natural", "sewer"];
+export const LIGHTING_PRESETS = ["studio", "dusk", "midnight", "sunset", "interior", "noon"];
+export const SKIN_BASE_PRESETS = ["polymer", "metal", "carbon", "wood"];
+
 const COLORS: Record<string, string> = {
   red: "#F80801",
   black: "#141414",

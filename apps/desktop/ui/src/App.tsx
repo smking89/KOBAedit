@@ -4,6 +4,7 @@ import { AssetBrowser } from "./assets/AssetBrowser";
 import { BrandingPanel } from "./components/BrandingPanel";
 import { PromoStudio } from "./components/PromoStudio";
 import { SplashScreen } from "./components/SplashScreen";
+import { captureWithRadar } from "./lib/radarCapture";
 import { WalkHud } from "./components/WalkHud";
 import { StepsNav } from "./components/StepsNav";
 import { WatermarkOverlay } from "./components/WatermarkOverlay";
@@ -69,6 +70,14 @@ export default function App() {
   const [assetsOpen, setAssetsOpen] = useState(false);
   const [brandingOpen, setBrandingOpen] = useState(false);
   const [promoOpen, setPromoOpen] = useState(false);
+  const [radarView, setRadarView] = useState(false);
+  useEffect(() => {
+    // Leaving the project or entering Walk Mode must not keep the radar camera.
+    setRadarView((current) => {
+      if (current) groundTools.current?.restoreRadarCamera();
+      return false;
+    });
+  }, [state.draft.projectKind, state.draft.walkMode]);
   const [snippetBusy, setSnippetBusy] = useState<"still" | "loop" | null>(null);
   const [snippetNote, setSnippetNote] = useState<string | null>(null);
   const [brandingState, setBrandingState] = useState(loadBranding);
@@ -100,12 +109,15 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [snippetNote]);
 
+  const snippetRun = useRef(0);
   const captureSnippet = async (
     mode: "still" | "loop",
     options: { filename?: string; seconds?: number; watermark?: WatermarkSettings; copy?: boolean } = {},
   ) => {
     const tools = groundTools.current;
     if (!tools || snippetBusy) return;
+    const run = ++snippetRun.current;
+    const cancelled = () => snippetRun.current !== run;
     setSnippetBusy(mode);
     try {
       const { branding, watermark: activeWatermark } = brandingRef.current;
@@ -117,7 +129,9 @@ export default function App() {
           return;
         }
         const blob = await composeSnippet(frame, watermark, branding);
+        if (cancelled()) return;
         const copied = options.copy === false ? false : await copySnippet(blob);
+        if (cancelled()) return;
         downloadBlob(blob, options.filename ?? `${snippetFileName()}.png`);
         setSnippetNote(
           copied
@@ -185,11 +199,18 @@ export default function App() {
             receipts.push("Viewport is not ready for a radar capture.");
             break;
           }
-          tools.setRadarCamera();
-          await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
-          await captureSnippet("still", { filename: effect.filename });
-          tools.restoreRadarCamera();
-          receipts.push(effect.note + ".");
+          try {
+            await captureWithRadar(tools, () =>
+              captureSnippet("still", { filename: effect.filename }),
+            );
+            receipts.push(effect.note + ".");
+          } catch (error) {
+            // Invalidate the late capture: when it eventually resolves it must
+            // not copy, download or overwrite the note.
+            snippetRun.current += 1;
+            setSnippetBusy(null);
+            receipts.push(`Radar capture failed: ${String(error)}`);
+          }
           break;
         }
         case "snippet-turntable":
@@ -534,6 +555,19 @@ export default function App() {
                 onClick={() => dispatch({ type: "setWalkMode", enabled: !draft.walkMode })}
               >
                 {draft.walkMode ? "Exit Walk" : "Walk Mode"}
+              </Button>
+              <Button
+                variant={radarView ? "primary" : "ghost"}
+                aria-pressed={radarView}
+                onClick={() => {
+                  const tools = groundTools.current;
+                  if (!tools) return;
+                  if (radarView) tools.restoreRadarCamera();
+                  else tools.setRadarCamera();
+                  setRadarView((current) => !current);
+                }}
+              >
+                Radar
               </Button>
               <Button
                 variant={testMode ? "primary" : "ghost"}

@@ -7,6 +7,13 @@
  */
 
 import { COMMAND_REGISTRY } from "./commands.ts";
+import {
+  BIOME_NAMES,
+  CAVE_PRESETS,
+  LIGHTING_PRESETS,
+  LOCATION_NAMES,
+  SKIN_BASE_PRESETS,
+} from "./promptParser.ts";
 
 export interface SlashSuggestion {
   /** Text inserted for the token (already includes `/` or `=`). */
@@ -45,26 +52,26 @@ const SLOTS: Record<string, { key: string; hint: string }[]> = {
     { key: "preset", hint: "mineshaft, natural, bunker" },
   ],
   "skin.applyBase": [
-    { key: "finish", hint: "matte, gloss, metallic" },
-    { key: "tint", hint: "colour name or hex" },
+    { key: "base", hint: "polymer, metal, carbon, wood" },
+    { key: "color", hint: "colour name or hex" },
   ],
   "skin.setLighting": [{ key: "preset", hint: "studio, dusk, midnight" }],
 };
 
 const VALUES: Record<string, Record<string, string[]>> = {
-  "map.generate": { biome: ["temperate", "arctic", "arid", "jungle"] },
+  "map.generate": { biome: BIOME_NAMES },
   "map.placeMonument": {
     type: ["airfield", "harbor", "launch site", "military"],
-    location: ["center", "coast", "north", "south", "east", "west"],
+    location: LOCATION_NAMES,
   },
   "map.connectRoads": { type: ["road", "river", "rail"], ringRoad: ["true", "false"] },
   "monument.assemble": { preset: ["small", "medium", "large"] },
   "cave.extrudeSpline": {
     direction: ["north", "south", "east", "west"],
-    preset: ["mineshaft", "natural", "bunker"],
+    preset: CAVE_PRESETS,
   },
-  "skin.applyBase": { finish: ["matte", "gloss", "metallic"], tint: ["red", "white", "black", "rust"] },
-  "skin.setLighting": { preset: ["studio", "dusk", "midnight"] },
+  "skin.applyBase": { base: SKIN_BASE_PRESETS, color: ["red", "white", "black", "rust"] },
+  "skin.setLighting": { preset: LIGHTING_PRESETS },
 };
 
 export function slashSlotValues(commandId: string, key: string): string[] {

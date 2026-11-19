@@ -166,17 +166,30 @@ export async function readAttachment(file: File): Promise<KobaAttachment> {
     }
   }
 
-  if (suffix !== ".zip" && file.type !== "application/zip") {
-    throw new Error(`${file.name} is not supported. Attach a .zip project or a PNG/JPEG/WebP image.`);
+  const isArchive = suffix === ".zip" || suffix === ".bundle" || file.type === "application/zip";
+  if (!isArchive) {
+    throw new Error(
+      `${file.name} is not supported. Attach a .zip/.bundle project, an .bundle asset pack, or a PNG/JPEG/WebP image.`,
+    );
   }
   if (file.size > MAX_ZIP_BYTES) {
     throw new Error(`${file.name} is larger than 40 MB.`);
   }
 
+  const raw = new Uint8Array(await file.arrayBuffer());
+  const magic = new TextDecoder().decode(raw.slice(0, 8));
+  if (/^Unity(FS|Web|Raw|AB)/.test(magic)) {
+    throw new Error(
+      `${file.name} is a real Unity AssetBundle (${magic.replace(/\0+$/, "")}). ` +
+        "KOBA EDIT cannot unpack UnityFS inside the browser: point the bundle scanner at your Rust Bundles folder, " +
+        "or attach the extracted .prefab/.map files or a project .zip/.bundle archive.",
+    );
+  }
+
   let files: Record<string, Uint8Array>;
   let unpacked = 0;
   try {
-    files = unzipSync(new Uint8Array(await file.arrayBuffer()), {
+    files = unzipSync(raw, {
       filter: (entry) => {
         if (entry.originalSize > MAX_ENTRY_BYTES) return false;
         unpacked += entry.originalSize;
@@ -184,7 +197,9 @@ export async function readAttachment(file: File): Promise<KobaAttachment> {
       },
     });
   } catch {
-    throw new Error(`${file.name} could not be opened as a ZIP archive.`);
+    throw new Error(
+      `${file.name} could not be opened as a ZIP-compatible bundle. Unity AssetBundles need to be unpacked with Unity first.`,
+    );
   }
   const names = Object.keys(files);
   if (names.length > MAX_ZIP_ENTRIES) {

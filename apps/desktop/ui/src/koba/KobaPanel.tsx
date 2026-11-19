@@ -757,7 +757,7 @@ export function KobaPanel({
                     <strong>{attachment.name}</strong>
                     <em>
                       {attachment.kind === "zip" && attachment.zip
-                        ? `${attachment.zip.entries} files${attachment.zip.projectDraft ? " / project restored" : ""}`
+                        ? `${attachment.zip.entries} files${attachment.zip.projectDraft ? " / project restored" : ""}${attachment.name.toLowerCase().endsWith(".bundle") ? " / bundle" : ""}`
                         : attachment.image
                           ? `${attachment.image.width}x${attachment.image.height} / ${attachment.image.dominant}`
                           : formatBytes(attachment.bytes)}
@@ -791,7 +791,7 @@ export function KobaPanel({
             <input
               ref={inputRef}
               type="file"
-              accept=".zip,image/png,image/jpeg,image/webp,image/gif"
+              accept=".zip,.bundle,image/png,image/jpeg,image/webp,image/gif"
               multiple
               hidden
               onChange={(event) => void addFiles(Array.from(event.target.files ?? []))}

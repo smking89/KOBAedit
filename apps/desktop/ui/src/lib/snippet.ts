@@ -68,8 +68,15 @@ export function watermarkFilter(tint: WatermarkSettings["tint"]): string {
 function loadImage(source: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("watermark logo could not be decoded"));
+    const timer = setTimeout(() => reject(new Error("watermark logo load timed out")), 4000);
+    image.onload = () => {
+      clearTimeout(timer);
+      resolve(image);
+    };
+    image.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error("watermark logo could not be decoded"));
+    };
     image.src = source;
   });
 }
@@ -187,15 +194,25 @@ export async function composeSnippet(
   }
   await drawWatermark(ctx, width, height, settings, branding);
   return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG encode failed"))), "image/png");
+    // A hidden/backgrounded tab can leave toBlob pending forever; bound it so
+    // callers can restore the camera and report a failure.
+    const timer = setTimeout(() => reject(new Error("PNG encode timed out")), 8000);
+    canvas.toBlob((blob) => {
+      clearTimeout(timer);
+      blob ? resolve(blob) : reject(new Error("PNG encode failed"));
+    }, "image/png");
   });
 }
 
 export async function copySnippet(blob: Blob): Promise<boolean> {
   try {
     if (!navigator.clipboard || typeof ClipboardItem === "undefined") return false;
-    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-    return true;
+    // Clipboard permission prompts can hang in embedded/background tabs.
+    const written = await Promise.race([
+      navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]).then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1500)),
+    ]);
+    return written;
   } catch {
     return false;
   }
