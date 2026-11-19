@@ -448,6 +448,8 @@ export function validateDraft(draft: WizardDraft): ValidationIssue[] {
   }
 
   if (draft.branch === "world") {
+    // Hidden placements stay in the project but are not part of the build.
+    const placements = draft.placements.filter((placement) => placement.visible !== false);
     const terrain = draft.terrain;
     if (terrain.sizeMetres < 1000 || terrain.sizeMetres > 6000) {
       add("terrain-size", "terrain", "error", "Map size must be between 1000 and 6000 metres.");
@@ -472,7 +474,7 @@ export function validateDraft(draft: WizardDraft): ValidationIssue[] {
       );
     }
 
-    const triangles = draft.placements.reduce((total, placement) => total + 1, 0);
+    const triangles = placements.reduce((total) => total + 1, 0);
     if (draft.projectKind === "monument" && triangles === 0) {
       add("monument-empty", "monuments", "error", "A monument project needs at least one prefab.");
     }
@@ -482,7 +484,7 @@ export function validateDraft(draft: WizardDraft): ValidationIssue[] {
 
     const halfSize = terrain.sizeMetres / 2;
     let previous = "";
-    const sorted = [...draft.placements].sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = [...placements].sort((a, b) => a.name.localeCompare(b.name));
     for (const placement of sorted) {
       if (placement.name === previous) {
         add(
@@ -698,7 +700,7 @@ export function validateDraft(draft: WizardDraft): ValidationIssue[] {
       }
     }
     for (const node of draft.io.nodes) {
-      if (node.placementId && !draft.placements.some((item) => item.id === node.placementId)) {
+      if (node.placementId && !placements.some((item) => item.id === node.placementId)) {
         add(
           `io-node-${node.id}`,
           "validate",

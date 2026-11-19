@@ -19,6 +19,8 @@ export interface GroundTools {
   captureFrame: () => HTMLCanvasElement | null;
   /** Top-down radar view; pair with restoreRadarCamera. */
   setRadarCamera: () => void;
+  toggleGrid: () => void;
+  toggleHelpers: () => void;
   restoreRadarCamera: () => void;
   /** Snippet/promo recording to WebM with a watermark painter. */
   recordTour: (options: {
@@ -51,6 +53,10 @@ export function Viewport({
   onExitWalk,
   onWalkCollision,
   onOpenPlacement,
+  skinPreview = "weapon",
+  skinVisible = true,
+  gridVisible = true,
+  overlaysVisible = true,
 }: {
   theme?: "dark" | "light";
   draft: WizardDraft;
@@ -70,6 +76,12 @@ export function Viewport({
   onExitWalk?: () => void;
   onWalkCollision?: (name: string | null) => void;
   onOpenPlacement?: (id: string) => void;
+  /** Weapon / character / arms subject for the skin viewport. */
+  skinPreview?: string;
+  /** Outliner eye for the active skin subject. */
+  skinVisible?: boolean;
+  gridVisible?: boolean;
+  overlaysVisible?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -144,6 +156,8 @@ export function Viewport({
           focus: (x, z, radius) => viewport.focusOn(x, z, radius),
           captureFrame: () => viewport.captureFrame(),
           setRadarCamera: () => viewport.setRadarCamera(),
+          toggleGrid: () => viewport.toggleGrid(),
+          toggleHelpers: () => viewport.toggleHelpers(),
           restoreRadarCamera: () => viewport.restoreRadarCamera(),
           recordTour: (options) => viewport.recordTour(options),
         });
@@ -172,6 +186,22 @@ export function Viewport({
     worldRef.current?.setDraft(draft);
     skinRef.current?.setDraft(draft);
   }, [draft]);
+
+  useEffect(() => {
+    skinRef.current?.setPreviewMode(skinPreview);
+  }, [skinPreview]);
+
+  useEffect(() => {
+    skinRef.current?.setSubjectVisible(skinVisible);
+  }, [skinVisible]);
+
+  useEffect(() => {
+    worldRef.current?.setGridVisible(gridVisible);
+  }, [gridVisible]);
+
+  useEffect(() => {
+    worldRef.current?.setHelpersVisible(overlaysVisible);
+  }, [overlaysVisible]);
 
   useEffect(() => {
     worldRef.current?.setInteraction(stepId, draft.studioMode);

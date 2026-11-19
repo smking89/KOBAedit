@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge, Button } from "../components/ui";
 import { demoMode, exportProject, listBaseMeshes, listPrefabs } from "../lib/ipc";
+import { linkedBundleRoot, pickBundleFolder, setLinkedBundleRoot } from "../lib/ipc";
 import { useWizard } from "../wizard/context";
 import { readAttachment, revokeAttachment } from "./attachments";
 import { refreshProjectThumbnail } from "../utils/thumbnailQueue";
@@ -114,6 +115,12 @@ const SUGGESTIONS = [
 
 const MAX_ATTACHMENTS = 6;
 
+/** `assets/bundled/.../harbor.prefab` -> `harbor`. */
+function assetBaseName(path: string): string {
+  const file = path.split("/").pop() ?? path;
+  return file.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
+}
+
 /** Chips that re-run a command, plus a bumped numeric variation. */
 function receiptChips(commands: ParsedCommand[]): { label: string; prompt: string }[] {
   return commands.flatMap((command) => {
@@ -196,6 +203,7 @@ export function KobaPanel({
   const buildRun = useRef<{ cancelled: boolean; paused: boolean } | null>(null);
   const [messages, setMessages] = useState<KobaMessage[]>([WELCOME]);
   const [prompt, setPrompt] = useState("");
+  const [bundleRoot, setBundleRoot] = useState(() => linkedBundleRoot());
   const [caret, setCaret] = useState(0);
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
@@ -764,6 +772,27 @@ export function KobaPanel({
                           ? `${attachment.image.width}x${attachment.image.height} / ${attachment.image.dominant}`
                           : formatBytes(attachment.bytes)}
                     </em>
+                    {attachment.unity && attachment.zip && attachment.zip.names.length > 0 && (
+                      <span className="koba-asset-names">
+                        {attachment.zip.names.slice(0, 4).map((asset) => (
+                          <button
+                            key={asset}
+                            type="button"
+                            className="koba-asset-name"
+                            title={asset}
+                            onClick={() => {
+                              setPrompt(`place ${assetBaseName(asset)} on the coast`);
+                              textRef.current?.focus();
+                            }}
+                          >
+                            {assetBaseName(asset)}
+                          </button>
+                        ))}
+                        {attachment.zip.names.length > 4 && (
+                          <em>+{attachment.zip.names.length - 4} more</em>
+                        )}
+                      </span>
+                    )}
                   </span>
                   <button
                     type="button"
@@ -804,9 +833,32 @@ export function KobaPanel({
               onClick={() => inputRef.current?.click()}
               disabled={adding}
             >
-              {adding ? "Reading file" : "Attach ZIP or image"}
+              {adding ? "Reading file" : "Attach ZIP, bundle or image"}
             </button>
-            <span>Drop files here. Project ZIPs restore their saved draft.</span>
+            <button
+              type="button"
+              className="koba-attach"
+              title={bundleRoot || "Pick your Rust Bundles folder"}
+              onClick={async () => {
+                const root = await pickBundleFolder();
+                if (!root) {
+                  append({
+                    role: "assistant",
+                    text: "Folder picking needs the desktop app. Use Attach ZIP, .bundle or image for a single file.",
+                  });
+                  return;
+                }
+                setLinkedBundleRoot(root);
+                setBundleRoot(root);
+                append({ role: "assistant", text: `Linked Bundles folder: ${root}` });
+              }}
+            >
+              {bundleRoot ? "Bundles folder linked" : "Link Bundles folder"}
+            </button>
+            <span>
+              Drop files here. ZIPs and UnityFS bundles unpack their assets; a linked Bundles folder scans real Rust
+              bundles in place.
+            </span>
           </div>
 
           <textarea

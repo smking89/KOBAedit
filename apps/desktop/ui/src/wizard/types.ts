@@ -173,6 +173,8 @@ export interface PrefabPlacement {
   parentId: string | null;
   /** Horizontal collision half-extent in metres, before placement scale. */
   collisionRadius: number;
+  /** Outliner eye state; hidden placements stay in the project. */
+  visible?: boolean;
   /** Collision box height in metres, before placement scale. */
   collisionHeight: number;
   flatten: boolean;

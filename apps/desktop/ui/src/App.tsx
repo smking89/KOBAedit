@@ -6,8 +6,9 @@ import { PromoStudio } from "./components/PromoStudio";
 import { SplashScreen } from "./components/SplashScreen";
 import { captureWithRadar } from "./lib/radarCapture";
 import { WalkHud } from "./components/WalkHud";
-import { StepsNav } from "./components/StepsNav";
 import { WatermarkOverlay } from "./components/WatermarkOverlay";
+import { Icon } from "./components/Icons";
+import { DEMO_PREFABS } from "./lib/demoAssets";
 import {
   clampWatermark,
   loadBranding,
@@ -16,7 +17,7 @@ import {
   type WatermarkSettings,
 } from "./lib/branding";
 import { parseAppSegment, type AppEffect, type PromoRequest } from "./lib/appCommands";
-import { applyTheme, loadTheme, saveTheme, type Theme } from "./lib/theme";
+import { applyTheme } from "./lib/theme";
 import {
   composeSnippet,
   copySnippet,
@@ -27,7 +28,7 @@ import {
 } from "./lib/snippet";
 import { Badge, Button } from "./components/ui";
 import { KobaPanel } from "./koba/KobaPanel";
-import { demoMode, saveProject, syncStatus } from "./lib/ipc";
+import { demoMode, exportProject, isTauri, saveProject, syncStatus } from "./lib/ipc";
 import { lightingState } from "./lib/lighting";
 import { draggedPrefab, endPrefabDrag } from "./lib/prefabDrag";
 import { refreshProjectThumbnail } from "./utils/thumbnailQueue";
@@ -56,8 +57,16 @@ const WEATHER_PRESETS: { id: WeatherPreset; label: string }[] = [
 // raycast through and land somewhere the user cannot see.
 const PANEL_SELECTOR = ".inspector, .asset-panel, .asset-backdrop, .koba-panel, .radar-overlay";
 
+type OutlinerItem = {
+  key: string;
+  label: string;
+  hidden: boolean;
+  layer?: { id: string; name: string; visible: boolean };
+  placement?: { id: string; name: string; visible?: boolean };
+};
+
 export default function App() {
-  const { state, dispatch, issues, stepIssues, canContinue, undo, canUndo, switchWorkspace } =
+  const { state, dispatch, issues, stepIssues, canContinue, undo, canUndo, redo, canRedo, switchWorkspace } =
     useWizard();
   const draft = state.draft;
   const meta = STEP_META[state.stepId];
@@ -71,6 +80,33 @@ export default function App() {
   const [brandingOpen, setBrandingOpen] = useState(false);
   const [promoOpen, setPromoOpen] = useState(false);
   const [radarView, setRadarView] = useState(false);
+  const [selectedObject, setSelectedObject] = useState("Assault Rifle");
+  const [hiddenObjects, setHiddenObjects] = useState<string[]>([]);
+  useEffect(() => {
+    setSelectedObject(draft.branch === "skin" ? "Assault Rifle" : "Terrain");
+  }, [draft.branch]);
+  const [outlinerQuery, setOutlinerQuery] = useState("");
+  const [railTool, setRailTool] = useState("select");
+  const [interactionMode, setInteractionMode] = useState("Object Mode");
+  const [shading, setShading] = useState("Solid");
+  const [snaps, setSnaps] = useState<string[]>(["Grid"]);
+  const [timelineOpen, setTimelineOpen] = useState(true);
+  const [skinPreview, setSkinPreview] = useState("weapon");
+  const [skinSubjectVisible, setSkinSubjectVisible] = useState(true);
+  const [gridVisible, setGridVisible] = useState(true);
+  const [overlaysVisible, setOverlaysVisible] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [skinMaterial, setSkinMaterial] = useState({
+    type: "Standard",
+    baseColor: 0.55,
+    metallic: 0.65,
+    smoothness: 0.4,
+    wear: 0.15,
+    glow: 0.8,
+  });
+  const [propertyTab, setPropertyTab] = useState<
+    "step" | "transform" | "terrain" | "material" | "puzzle" | "branding" | "render"
+  >("step");
   useEffect(() => {
     // Leaving the project or entering Walk Mode must not keep the radar camera.
     setRadarView((current) => {
@@ -81,27 +117,16 @@ export default function App() {
   const [snippetBusy, setSnippetBusy] = useState<"still" | "loop" | null>(null);
   const [snippetNote, setSnippetNote] = useState<string | null>(null);
   const [brandingState, setBrandingState] = useState(loadBranding);
-  const [theme, setTheme] = useState<Theme>(loadTheme);
+  const [launcherOpen, setLauncherOpen] = useState(true);
   const [splashDone, setSplashDone] = useState(false);
   const [promoRequest, setPromoRequest] = useState<(PromoRequest & { id: number }) | null>(null);
   const brandingRef = useRef(brandingState);
 
   useEffect(() => {
-    applyTheme(theme);
-    saveTheme(theme);
-  }, [theme]);
-
-  // Alt+T flips the studio theme from anywhere.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.altKey && (event.key === "t" || event.key === "T")) {
-        event.preventDefault();
-        setTheme((current) => (current === "dark" ? "light" : "dark"));
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    applyTheme("dark");
   }, []);
+
+
 
   useEffect(() => {
     if (!snippetNote) return;
@@ -144,17 +169,19 @@ export default function App() {
       const focus = selected?.position ?? { x: 0, z: 0 };
       const radius = Math.max(90, (selected?.collisionRadius ?? 20) * 7);
       const painter = await createWatermarkPainter(watermark, branding);
+      if (cancelled()) return;
       const seconds = Math.max(1, Math.min(30, options.seconds ?? 5));
       const blob = await tools.recordTour({
         shots: [{ x: focus.x, z: focus.z, radius, seconds }],
         draw: (ctx, width, height) => painter(ctx, width, height),
       });
+      if (cancelled()) return;
       if (!blob) {
-        setSnippetNote("This machine cannot record WebM loops.");
+        setSnippetNote("This machine cannot record video loops.");
         return;
       }
       downloadBlob(blob, `${snippetFileName("koba-loop")}.${videoExtension(blob)}`);
-      setSnippetNote(`${seconds} s turntable loop saved as WebM.`);
+      setSnippetNote(`${seconds} s turntable loop saved as ${videoExtension(blob).toUpperCase()}.`);
     } catch (error) {
       setSnippetNote(error instanceof Error ? error.message : "Snippet capture failed.");
     } finally {
@@ -341,12 +368,28 @@ export default function App() {
       if ((event.key === "g" || event.key === "G") && !event.metaKey && !event.ctrlKey && !event.altKey) {
         if (event.repeat) return;
         event.preventDefault();
-        // Walk mode owns pointer lock; the 2D map is a pointer surface, so a
-        // G press leaves walk mode first instead of fighting the lock.
-        if (!radarOpen && state.draft.walkMode) {
-          dispatch({ type: "setWalkMode", enabled: false });
-        }
-        setRadarOpen((value) => !value);
+        setRailTool("move");
+        return;
+      }
+      if ((event.key === "r" || event.key === "R") && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        setRailTool("rotate");
+        return;
+      }
+      if ((event.key === "s" || event.key === "S") && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        setRailTool("scale");
+        return;
+      }
+      if (event.key === "Home" || event.code === "NumpadDecimal") {
+        event.preventDefault();
+        const tools = groundTools.current;
+        const selected = state.draft.placements.find((item) => item.id === state.draft.selectedPlacementId);
+        tools?.focus(
+          selected?.position.x ?? 0,
+          selected?.position.z ?? 0,
+          Math.max(60, state.draft.terrain.sizeMetres * 0.45),
+        );
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -404,6 +447,20 @@ export default function App() {
     }
   };
 
+  const onExport = async () => {
+    setExporting(true);
+    try {
+      const report = await exportProject(draft);
+      setSnippetNote(
+        `${isTauri() ? "Exported" : "Demo export (no native shell)"} ${report.kind.toUpperCase()} · ${report.path}`,
+      );
+    } catch (cause) {
+      setSnippetNote(cause instanceof Error ? cause.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div
       className={`app${prefabDragActive ? " is-prefab-drag" : ""}`}
@@ -419,6 +476,67 @@ export default function App() {
           <img className="brand-logo" src="/koba-wordmark.png" alt="KOBA EDIT" />
           <p className="brand-sub">Map, monument and skin workspace</p>
         </div>
+
+        <nav className="classic-menus" aria-label="Main menu">
+          {([
+            ["File", ["New File", "Open…", "Import .prefab / .map", "Save .koba", "Export"]],
+            ["Edit", ["Undo", "Redo", "Preferences"]],
+            ["Add", ["Monument", "Spline", "Puzzle Zone", "Terrain Layer"]],
+            ["View", ["Frame All", "Radar View", "Toggle Grid", "Toggle Overlays", "Snippet", "Walk Mode"]],
+            ["Build", ["Validate Project", "Build Bundle", "Auto-Conform", "Export .map", "Export .prefab"]],
+            ["Help", ["Quick Launch", "Documentation", "About KOBA EDIT"]],
+          ] as const).map(([label, items]) => (
+            <details className="classic-menu" key={label}>
+              <summary>{label}</summary>
+              <div className="classic-menu-pop" role="menu">
+                {items.map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    role="menuitem"
+                    disabled={
+                      (label === "Edit" && item === "Redo" && !canRedo) ||
+                      (label === "Edit" && item === "Undo" && !canUndo)
+                    }
+                    onClick={(event) => {
+                      (event.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open");
+                      if (label === "File" && item === "Save .koba") void onSave();
+                      if (label === "File" && item === "Import .prefab / .map") setAssetsOpen(true);
+                      if (label === "File" && item === "Open…") setAssetsOpen(true);
+                      if (label === "Edit" && item === "Undo") undo();
+                      if (label === "Edit" && item === "Redo") redo();
+                      if (label === "View" && item === "Frame All") {
+                        groundTools.current?.focus(0, 0, Math.max(60, state.draft.terrain.sizeMetres * 0.45));
+                      }
+                      if (label === "View" && item === "Radar View") setRadarOpen((open) => !open);
+                      if (label === "View" && item === "Toggle Grid") setGridVisible((value) => !value);
+                      if (label === "View" && item === "Toggle Overlays") setOverlaysVisible((value) => !value);
+                      if (label === "Build" && item === "Validate Project") setTestMode(true);
+                      if (label === "Build" && (item === "Export .map" || item === "Export .prefab")) void onExport();
+                      if (label === "File" && item === "Export") void onExport();
+                      if (label === "Add" && item === "Monument" && DEMO_PREFABS[0]) {
+                        dispatch({ type: "addPlacement", asset: DEMO_PREFABS[0] });
+                      }
+                      if (label === "Add" && item === "Spline") {
+                        dispatch({ type: "addSpline", kind: "road" });
+                      }
+                      if (label === "Add" && item === "Puzzle Zone") {
+                        const base = DEMO_PREFABS.find((asset) => /cave|tunnel/i.test(asset.name)) ?? DEMO_PREFABS[0];
+                        if (base) dispatch({ type: "addPlacement", asset: base });
+                      }
+                      if (label === "Add" && item === "Terrain Layer") {
+                        dispatch({ type: "addLayer", kind: "splat" });
+                      }
+                      if (label === "Help" && item === "Quick Launch") setLauncherOpen(true);
+                    }}
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </details>
+          ))}
+        </nav>
 
         <nav className="mode-tabs" aria-label="Workspace mode">
           {([
@@ -436,8 +554,12 @@ export default function App() {
               {label}
             </button>
           ))}
+          {(["Plugins", "Cinematics"] as const).map((label) => (
+            <button key={label} type="button" className="mode-tab" disabled title={`${label} workspace is not connected yet`}>
+              {label}
+            </button>
+          ))}
         </nav>
-
         <div className="topbar-project">
           <span className="project-name">{draft.name || "Untitled project"}</span>
           <span className="topbar-sep" />
@@ -462,23 +584,6 @@ export default function App() {
           </span>
           <button
             type="button"
-            className={`koba-launch${kobaOpen ? " is-active" : ""}`}
-            aria-expanded={kobaOpen}
-            onClick={() => {
-              setAssetsOpen(false);
-              setKobaOpen((value) => !value);
-            }}
-          >
-            <span className="koba-launch-mark" aria-hidden="true">
-              K
-            </span>
-            <span>
-              <strong>KOBA EDIT</strong>
-              <em>Prompt build</em>
-            </span>
-          </button>
-          <button
-            type="button"
             className={`asset-launch${assetsOpen ? " is-active" : ""}`}
             aria-expanded={assetsOpen}
             onClick={() => {
@@ -494,59 +599,8 @@ export default function App() {
               <em>Local index</em>
             </span>
           </button>
-          <button
-            type="button"
-            className="theme-toggle"
-            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-            title={`${theme === "dark" ? "Light" : "Dark"} theme (Alt + T)`}
-            onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
-          >
-            {theme === "dark" ? (
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <circle cx="8" cy="8" r="3.2" fill="currentColor" />
-                <g stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
-                  <path d="M8 1v1.8M8 13.2V15M1 8h1.8M13.2 8H15M3.1 3.1l1.3 1.3M11.6 11.6l1.3 1.3M12.9 3.1l-1.3 1.3M4.4 11.6l-1.3 1.3" />
-                </g>
-              </svg>
-            ) : (
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M12.8 9.6A5.6 5.6 0 0 1 6.4 3.2a5.6 5.6 0 1 0 6.4 6.4Z" fill="currentColor" />
-              </svg>
-            )}
-          </button>
-          <Button
-            variant={brandingOpen ? "primary" : "ghost"}
-            aria-pressed={brandingOpen}
-            onClick={() => setBrandingOpen((open) => !open)}
-          >
-            Branding
-          </Button>
-          <Button
-            variant="ghost"
-            disabled={snippetBusy !== null}
-            onClick={() => void captureSnippet("still")}
-          >
-            Snippet
-          </Button>
-          <Button
-            variant="ghost"
-            disabled={snippetBusy !== null}
-            onClick={() => void captureSnippet("loop")}
-          >
-            Loop 5s
-          </Button>
-          <Button
-            variant={promoOpen ? "primary" : "ghost"}
-            aria-pressed={promoOpen}
-            onClick={() => setPromoOpen((open) => !open)}
-          >
-            Promo
-          </Button>
-          <Button variant="ghost" onClick={undo} disabled={!canUndo}>
-            Undo
-          </Button>
-          <Button variant="ghost" onClick={onSave} disabled={saving}>
-            Save project
+          <Button variant="primary" onClick={() => void onExport()} disabled={exporting}>
+            {exporting ? "Exporting…" : "Export"}
           </Button>
           {draft.branch === "world" && (
             <>
@@ -556,57 +610,140 @@ export default function App() {
               >
                 {draft.walkMode ? "Exit Walk" : "Walk Mode"}
               </Button>
-              <Button
-                variant={radarView ? "primary" : "ghost"}
-                aria-pressed={radarView}
-                onClick={() => {
-                  const tools = groundTools.current;
-                  if (!tools) return;
-                  if (radarView) tools.restoreRadarCamera();
-                  else tools.setRadarCamera();
-                  setRadarView((current) => !current);
-                }}
-              >
-                Radar
-              </Button>
-              <Button
-                variant={testMode ? "primary" : "ghost"}
-                aria-pressed={testMode}
-                onClick={() => setTestMode((enabled) => !enabled)}
-              >
-                Test Mode
-              </Button>
             </>
           )}
-          <button
-            type="button"
-            className="studio-toggle"
-            aria-pressed={draft.studioMode}
-            onClick={() => dispatch({ type: "toggleStudio" })}
-          >
-            <span className="studio-toggle-track">
-              <span />
-            </span>
-            <span>
-              <strong>Studio Mode</strong>
-              <em>{draft.studioMode ? "Full manual controls unlocked" : "Guided wizard"}</em>
-            </span>
-          </button>
         </div>
       </header>
 
       <div className="shell">
-        <StepsNav />
-
         <main className="stage">
           <div className="viewport-frame">
-            <WatermarkOverlay
-              settings={brandingState.watermark}
-              branding={brandingState.branding}
-            />
+            <nav className="tool-rail" aria-label="Viewport tools">
+              {([
+                ["select", "select", "Select", "V"],
+                ["move", "move", "Move / Grab", "G"],
+                ["rotate", "rotate", "Rotate", "R"],
+                ["scale", "scale", "Scale", "S"],
+                ["brush", "sculpt", "Terrain Sculpt", "B"],
+                ["paint", "paint", "Splat Paint", "P"],
+                ["spline", "spline", "Road / Cave Spline", "C"],
+                ["cut", "cut", "Auto-Cut Hole", "H"],
+                ["ruler", "ruler", "Measure", "M"],
+              ] as const).map(([id, icon, label, shortcut]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`tool-rail-btn${railTool === id ? " is-active" : ""}`}
+                  title={`${label} (${shortcut})`}
+                  aria-label={label}
+                  aria-pressed={railTool === id}
+                  onClick={() => setRailTool(id)}
+                >
+                  <Icon name={icon} size={20} />
+                </button>
+              ))}
+            </nav>
+            <div className="viewport-subheader" role="toolbar" aria-label="Viewport controls">
+              <div className="vsh-group">
+                <select
+                  className="vsh-select"
+                  value={interactionMode}
+                  aria-label="Interaction mode"
+                  onChange={(event) => setInteractionMode(event.target.value)}
+                >
+                  {["Object Mode", "Sculpt", "Paint", "Wire IO"].map((mode) => (
+                    <option key={mode}>{mode}</option>
+                  ))}
+                </select>
+                <span className="vsh-sep" />
+                {["Grid", "Terrain", "Socket"].map((snap) => (
+                  <button
+                    key={snap}
+                    type="button"
+                    className={`vsh-chip${snaps.includes(snap) ? " is-active" : ""}`}
+                    aria-pressed={snaps.includes(snap)}
+                    onClick={() =>
+                      setSnaps((current) =>
+                        current.includes(snap) ? current.filter((item) => item !== snap) : [...current, snap],
+                      )
+                    }
+                  >
+                    {snap}
+                  </button>
+                ))}
+              </div>
+              <div className="vsh-group vsh-center">
+                <span className="vsh-clock">{lighting.label}</span>
+                <input
+                  className="vsh-time"
+                  type="range"
+                  min={0}
+                  max={1439}
+                  step={5}
+                  value={draft.lighting?.timeOfDay ?? 630}
+                  aria-label="Time of day"
+                  onChange={(event) =>
+                    dispatch({ type: "setLighting", patch: { timeOfDay: Number(event.target.value) } })
+                  }
+                />
+                <span className="vsh-sep" />
+                {WEATHER_PRESETS.slice(0, 4).map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    className={`vsh-chip${draft.lighting?.weather === preset.id ? " is-active" : ""}`}
+                    onClick={() => dispatch({ type: "setLighting", patch: { weather: preset.id } })}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              {draft.branch === "skin" && (
+                <div className="vsh-group vsh-preview">
+                  {[
+                    ["weapon", "Weapon"],
+                    ["character", "Full Character"],
+                    ["arms", "First-Person Arms"],
+                  ].map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={`vsh-chip${skinPreview === id ? " is-active" : ""}`}
+                      aria-pressed={skinPreview === id}
+                      onClick={() => setSkinPreview(id)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="vsh-group vsh-right">
+                {["Wireframe", "Solid", "Material", "Rendered"].map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`vsh-chip${shading === mode ? " is-active" : ""}`}
+                    aria-pressed={shading === mode}
+                    onClick={() => setShading(mode)}
+                  >
+                    {mode === "Material" ? "Mat" : mode === "Wireframe" ? "Wire" : mode}
+                  </button>
+                ))}
+                <span className="vsh-sep" />
+                <button type="button" className="vsh-chip">Gizmos</button>
+                <button type="button" className="vsh-chip">Overlays</button>
+              </div>
+            </div>
+            {/* Tiled proof is an export/promo look; keep it off the editing viewport. */}
+            {brandingState.watermark.anchor !== "tiled" && (
+              <WatermarkOverlay
+                settings={brandingState.watermark}
+                branding={brandingState.branding}
+              />
+            )}
             <Viewport
               key={quality}
-              theme={theme}
+              theme="dark"
               draft={draft}
               stepId={state.stepId}
               onSculpt={(strokes) => dispatch({ type: "addStrokes", strokes })}
@@ -628,6 +765,10 @@ export default function App() {
               }}
               onExitWalk={() => dispatch({ type: "setWalkMode", enabled: false })}
               onWalkCollision={setWalkCollision}
+              skinPreview={skinPreview}
+              skinVisible={skinSubjectVisible}
+              gridVisible={gridVisible}
+              overlaysVisible={overlaysVisible}
               onOpenPlacement={(id) => {
                 const placement = draft.placements.find((item) => item.id === id);
                 if (!placement || draft.projectKind === "monument") return;
@@ -822,6 +963,42 @@ export default function App() {
             </div>
             {radarOpen && <RadarMap draft={draft} onClose={() => setRadarOpen(false)} />}
           </div>
+          <section className={`timeline-dock${timelineOpen ? "" : " is-collapsed"}`} aria-label="Cinematics timeline">
+            <header className="timeline-head">
+              <button type="button" className="link-button" onClick={() => setTimelineOpen((open) => !open)}>
+                {timelineOpen ? "▾" : "▸"} Timeline
+              </button>
+              <span className="timeline-meta">Scene 1 · 240 frames · 24 fps</span>
+              <div className="timeline-actions">
+                <button type="button" className="vsh-chip">⏮</button>
+                <button type="button" className="vsh-chip">▶</button>
+                <button type="button" className="vsh-chip">⏭</button>
+                <span className="vsh-sep" />
+                <button type="button" className="vsh-chip">Audio</button>
+              </div>
+            </header>
+            {timelineOpen && (
+              <div className="timeline-body">
+                <div className="timeline-ruler" aria-hidden="true">
+                  {Array.from({ length: 25 }, (_, index) => (
+                    <span key={index} className={index % 5 === 0 ? "is-major" : ""}>
+                      {index * 10}
+                    </span>
+                  ))}
+                  <i className="timeline-playhead" />
+                </div>
+                <div className="timeline-track">
+                  <span className="timeline-track-label">KOBA</span>
+                  <i className="timeline-key" style={{ left: "12%" }} />
+                  <i className="timeline-key" style={{ left: "46%" }} />
+                  <i className="timeline-key" style={{ left: "78%" }} />
+                </div>
+                <div className="timeline-track is-audio">
+                  <span className="timeline-track-label">AUDIO</span>
+                </div>
+              </div>
+            )}
+          </section>
           <footer className="stagebar">
             <div className="stagebar-group">
               <span>Engine</span>
@@ -869,6 +1046,14 @@ export default function App() {
             >
               Previous step
             </button>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => dispatch({ type: "next" })}
+              disabled={blocker || isLast}
+            >
+              {isLast ? "Final step" : "Continue"}
+            </button>
             <span className="step-count">
               Step {stepIndex + 1} / {steps.length}
             </span>
@@ -876,52 +1061,235 @@ export default function App() {
         </main>
 
         <aside className="inspector">
-          <header className="inspector-head">
-            <p className="eyebrow">
-              {draft.branch === "skin" ? "Skin branch" : "World branch"} / Step{" "}
-              {String(stepIndex + 1).padStart(2, "0")}
-            </p>
-            <h1>{meta.title}</h1>
-            <p className="inspector-desc">{meta.description}</p>
-            {meta.studioTools.length > 0 && (
-              <div className={`studio-hint${draft.studioMode ? " is-on" : ""}`}>
-                <span>{draft.studioMode ? "Studio tools active" : "Advanced tools available"}</span>
-                <ul>
-                  {meta.studioTools.map((tool) => (
-                    <li key={tool}>{tool}</li>
-                  ))}
-                </ul>
+          <section className="outliner" aria-label="Scene outliner">
+            <header className="outliner-head">
+              <span className="eyebrow">Scene</span>
+              <h2>Outliner</h2>
+            </header>
+            <label className="outliner-search">
+              <span className="sr-only">Search scene objects</span>
+              <input
+                type="search"
+                value={outlinerQuery}
+                placeholder="Search scene..."
+                onChange={(event) => setOutlinerQuery(event.target.value)}
+              />
+            </label>
+            <ul className="outliner-tree">
+              {((draft.branch === "skin"
+                ? [
+                    {
+                      key: "skin-subject",
+                      label: draft.skin.baseMeshName || "Base mesh",
+                      hidden: !skinSubjectVisible,
+                    },
+                  ]
+                : [
+                    ...(draft.terrain.layers ?? []).map((layer) => ({
+                      key: `layer-${layer.id}`,
+                      label: `Layer: ${layer.name}`,
+                      hidden: !layer.visible,
+                      layer,
+                    })),
+                    ...draft.placements.map((placement) => ({
+                      key: `placement-${placement.id}`,
+                      label: placement.name,
+                      hidden: placement.visible === false,
+                      placement,
+                    })),
+                  ]
+              ) as OutlinerItem[])
+                .filter((item) => item.label.toLowerCase().includes(outlinerQuery.trim().toLowerCase()))
+                .map((item) => (
+                  <li key={item.key} className={selectedObject === item.label ? "is-selected" : ""}>
+                    <button
+                      type="button"
+                      className={`outliner-eye${item.hidden ? " is-off" : ""}`}
+                      aria-label={`${item.hidden ? "Show" : "Hide"} ${item.label}`}
+                      aria-pressed={!item.hidden}
+                      onClick={() => {
+                        if ("layer" in item && item.layer) {
+                          dispatch({
+                            type: "patchTerrain",
+                            patch: {
+                              layers: (draft.terrain.layers ?? []).map((layer) =>
+                                layer.id === item.layer!.id ? { ...layer, visible: !layer.visible } : layer,
+                              ),
+                            },
+                          });
+                          return;
+                        }
+                        if ("placement" in item && item.placement) {
+                          dispatch({
+                            type: "updatePlacement",
+                            id: item.placement.id,
+                            patch: { visible: item.placement.visible === false },
+                          });
+                          return;
+                        }
+                        setSkinSubjectVisible((visible) => !visible);
+                      }}
+                    >
+                      {item.hidden ? "◌" : "◉"}
+                    </button>
+                    <button
+                      type="button"
+                      className="outliner-name"
+                      onClick={() => {
+                        setSelectedObject(item.label);
+                        if ("placement" in item && item.placement) {
+                          dispatch({ type: "selectPlacement", id: item.placement.id });
+                        }
+                      }}
+                    >
+                      <span className="outliner-icon" aria-hidden="true">
+                        {"placement" in item ? "◈" : "◇"}
+                      </span>
+                      {item.label}
+                    </button>
+                  </li>
+                ))}
+            </ul>
+          </section>
+
+          <section className="properties" aria-label="Properties">
+            <header className="properties-head">
+              <span className="eyebrow">Properties</span>
+              <h2>{selectedObject}</h2>
+            </header>
+            <div className="properties-body">
+              <nav className="property-rail" aria-label="Property categories">
+                {([
+                  ["step", "step", "Step editor"],
+                  ["transform", "transform", "Transform"],
+                  ["terrain", "terrain", "Terrain & Auto-Conform"],
+                  ["material", "material", "PBR Materials & Tattoos"],
+                  ["puzzle", "puzzle", "Puzzles & Zones"],
+                  ["branding", "branding", "Branding & Watermark"],
+                  ["render", "render", "Render & Export"],
+                ] as const).map(([id, icon, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    aria-pressed={propertyTab === id}
+                    className={`property-tab${propertyTab === id ? " is-active" : ""}`}
+                    onClick={() => setPropertyTab(id)}
+                  >
+                    <Icon name={icon} size={18} />
+                  </button>
+                ))}
+              </nav>
+
+              <div className="property-content">
+                {propertyTab === "material" && (
+                  <div className="material-editor">
+                    <label className="material-row">
+                      <span>Skin Type</span>
+                      <select
+                        value={skinMaterial.type}
+                        onChange={(event) => setSkinMaterial((m) => ({ ...m, type: event.target.value }))}
+                      >
+                        {["Standard", "Camo", "Glow-in-the-Dark", "Glowing Sights", "Animated", "Transparent Cutout", "3D Sculpted"].map(
+                          (type) => (
+                            <option key={type}>{type}</option>
+                          ),
+                        )}
+                      </select>
+                    </label>
+                    {([
+                      ["Base Color", "baseColor"],
+                      ["Metallic", "metallic"],
+                      ["Smoothness", "smoothness"],
+                      ["Edge Wear", "wear"],
+                      ["Glow Intensity", "glow"],
+                    ] as const).map(([label, key]) => (
+                      <label className="material-row" key={key}>
+                        <span>{label}</span>
+                        <span className="material-control">
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            value={skinMaterial[key]}
+                            onChange={(event) =>
+                              setSkinMaterial((m) => ({ ...m, [key]: Number(event.target.value) }))
+                            }
+                          />
+                          <em>{Math.round(skinMaterial[key] * 100)}%</em>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {propertyTab === "step" && (
+                  <div className="property-step">
+                    <StepComponent />
+                  </div>
+                )}
+                {propertyTab === "branding" && (
+                  <BrandingPanel
+                    open
+                    state={brandingState}
+                    onChange={setBrandingState}
+                    onClose={() => setPropertyTab("transform")}
+                  />
+                )}
+                {propertyTab === "render" && (
+                  <PromoStudio
+                    open
+                    onClose={() => setPropertyTab("transform")}
+                    placements={draft.placements}
+                    sizeMetres={draft.terrain.sizeMetres}
+                    branding={brandingState.branding}
+                    watermark={brandingState.watermark}
+                    request={promoRequest}
+                    onRequestApplied={() => setPromoRequest(null)}
+                    record={(options) => groundTools.current?.recordTour(options) ?? Promise.resolve(null)}
+                  />
+                )}
+                {propertyTab !== "branding" && propertyTab !== "render" && propertyTab !== "step" && propertyTab !== "material" && (
+                  <dl className="property-rows">
+                    {(propertyTab === "terrain"
+                      ? [
+                          ["Seed", String(draft.terrain.seed)],
+                          ["Size", `${draft.terrain.sizeMetres} m`],
+                          ["Water line", `${draft.terrain.waterLevel} m`],
+                          ["Preset", draft.terrain.preset],
+                          ["Weather", lighting.weather ?? "Clear"],
+                          ["Snap", draft.studioMode ? "Studio" : "Terrain"],
+                        ]
+                      : propertyTab === "puzzle"
+                          ? [
+                              ["Zone type", "Puzzle"],
+                              ["Radius", "18 m"],
+                              ["Loot tier", "T2"],
+                              ["Sockets", "4"],
+                              ["Auto-cut", "Off"],
+                              ["Validation", "Not run"],
+                            ]
+                          : [
+                              ["Name", selectedObject],
+                              ["Type", draft.branch === "skin" ? "Mesh" : "Scene object"],
+                              ["Position X", "0.00 m"],
+                              ["Position Y", "0.00 m"],
+                              ["Position Z", "0.00 m"],
+                              ["Rotation", "0°"],
+                              ["Scale", "1.00"],
+                            ]
+                    ).map(([label, value]) => (
+                      <div className="property-row" key={label}>
+                        <dt>{label}</dt>
+                        <dd>{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
               </div>
-            )}
-          </header>
-
-          <div className="inspector-scroll">
-            <StepComponent />
-          </div>
-
-          <footer className="inspector-foot">
-            <div className={`guard-note${blocker ? " is-error" : ""}`}>
-              {blocker
-                ? stepIssues.find((issue) => issue.severity === "error")?.message
-                : isLast
-                  ? "Review the export settings, then write the final file."
-                  : nextStep
-                    ? `Next: ${STEP_META[nextStep].label}`
-                    : "Ready"}
             </div>
-            <div className="inspector-actions">
-              <Button variant="ghost" onClick={() => dispatch({ type: "back" })} disabled={stepIndex === 0}>
-                Back
-              </Button>
-              <Button
-                variant="primary"
-                onClick={() => dispatch({ type: "next" })}
-                disabled={blocker || isLast}
-              >
-                {isLast ? "Final step" : "Continue"}
-              </Button>
-            </div>
-          </footer>
+          </section>
         </aside>
       </div>
 
@@ -949,23 +1317,52 @@ export default function App() {
         mode={draft.projectKind}
         onClose={() => setAssetsOpen(false)}
       />
-      <BrandingPanel
-        open={brandingOpen}
-        state={brandingState}
-        onChange={setBrandingState}
-        onClose={() => setBrandingOpen(false)}
-      />
-      <PromoStudio
-        open={promoOpen}
-        onClose={() => setPromoOpen(false)}
-        placements={draft.placements}
-        sizeMetres={draft.terrain.sizeMetres}
-        branding={brandingState.branding}
-        watermark={brandingState.watermark}
-        request={promoRequest}
-        onRequestApplied={() => setPromoRequest(null)}
-        record={(options) => groundTools.current?.recordTour(options) ?? Promise.resolve(null)}
-      />
+      {launcherOpen && (
+        <div className="launcher-backdrop" role="presentation" onClick={() => setLauncherOpen(false)}>
+          <section className="launcher" role="dialog" aria-modal="true" aria-label="Quick launch" onClick={(event) => event.stopPropagation()}>
+            <div className="launcher-art">
+              <img src="/koba-hero.webp" alt="KOBA EDIT showcase" />
+            </div>
+            <div className="launcher-banner">
+              <img src="/koba-wordmark.png" alt="KOBA EDIT" />
+              <p>OFFLINE MAP &amp; MONUMENT STUDIO</p>
+            </div>
+            <div className="launcher-grid">
+              <div className="launcher-presets">
+                <span className="section-label">New file</span>
+                {([
+                  ["Full Map", "map"],
+                  ["Custom Monument", "monument"],
+                  ["Item & Player Skin", "skin"],
+                ] as const).map(([label, kind]) => (
+                  <button key={label} type="button" className="launcher-preset" onClick={() => { switchWorkspace(kind); setLauncherOpen(false); }}>
+                    <strong>{label}</strong>
+                    <span>{kind === "map" ? "Terrain, monuments, paths and puzzles" : kind === "monument" ? "Single monument with sockets" : "UV skin and PBR materials"}</span>
+                  </button>
+                ))}
+                <button type="button" className="launcher-preset" onClick={() => setLauncherOpen(false)}>
+                  <strong>Plugin &amp; Shop</strong>
+                  <span>Requires the Plugins workspace</span>
+                </button>
+                <button type="button" className="launcher-preset" onClick={() => { setPropertyTab("render"); setLauncherOpen(false); }}>
+                  <strong>Auto Cinematic</strong>
+                  <span>Promo timeline and render settings</span>
+                </button>
+              </div>
+              <div className="launcher-recent">
+                <span className="section-label">Recent files</span>
+                <p className="launcher-empty">No recent projects yet. Saved .koba files appear here.</p>
+                <button type="button" className="launcher-browse" onClick={() => { setLauncherOpen(false); setAssetsOpen(true); }}>
+                  Browse assets
+                </button>
+              </div>
+            </div>
+            <footer className="launcher-foot">
+              <button type="button" className="link-button" onClick={() => setLauncherOpen(false)}>Close</button>
+            </footer>
+          </section>
+        </div>
+      )}
       {snippetNote && (
         <div className="snippet-toast" role="status" aria-live="polite">
           {snippetNote}

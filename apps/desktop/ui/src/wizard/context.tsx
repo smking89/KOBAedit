@@ -58,6 +58,8 @@ interface WizardContextValue {
   /** Restore the placements as they were before the last map edit. */
   undo: () => void;
   canUndo: boolean;
+  redo: () => void;
+  canRedo: boolean;
   steps: WizardStepId[];
   issues: ValidationIssue[];
   stepIssues: ValidationIssue[];
@@ -178,32 +180,37 @@ export function WizardProvider({ children }: { children: ReactNode }) {
     | { kind: "placements"; placements: PrefabPlacement[]; selectedPlacementId: string | null }
     | { kind: "state"; state: WizardState };
   const history = useRef<UndoEntry[]>([]);
+  const future = useRef<UndoEntry[]>([]);
   const lastEdit = useRef<{ key: string; at: number } | null>(null);
   const [historyDepth, setHistoryDepth] = useState(0);
+  const [redoDepth, setRedoDepth] = useState(0);
 
   const dispatch = useCallback(
     (action: WizardAction) => {
-      const tracksPlacements =
-        action.type === "addPlacement" ||
-        action.type === "removePlacement" ||
-        action.type === "updatePlacement";
-      if (tracksPlacements) {
-        const key = action.type === "updatePlacement" ? `update:${action.id}` : action.type;
+      // Everything that changes project content is undoable. Navigation,
+      // selection and transient modes are not.
+      const transient = new Set([
+        "hydrate",
+        "selectPlacement",
+        "setActiveLayer",
+        "toggleStudio",
+        "setWalkMode",
+        "next",
+        "back",
+        "goTo",
+        "markSaved",
+        "applyGenerated",
+      ]);
+      if (!transient.has(action.type)) {
+        const key = `${action.type}:${"id" in action ? action.id ?? "" : ""}`;
         const now = Date.now();
-        // Slider drags fire many updates for the same placement; collapse them
-        // into one undo step instead of filling the stack with tiny moves.
-        const coalesce =
-          action.type === "updatePlacement" &&
-          lastEdit.current?.key === key &&
-          now - lastEdit.current.at < 900;
+        const coalesce = lastEdit.current?.key === key && now - lastEdit.current.at < 900;
         if (!coalesce) {
-          history.current.push({
-            kind: "placements",
-            placements: state.draft.placements,
-            selectedPlacementId: state.draft.selectedPlacementId,
-          });
+          history.current.push({ kind: "state", state });
           if (history.current.length > 40) history.current.shift();
           setHistoryDepth(history.current.length);
+          future.current = [];
+          setRedoDepth(0);
         }
         lastEdit.current = { key, at: now };
       } else {
@@ -211,12 +218,15 @@ export function WizardProvider({ children }: { children: ReactNode }) {
       }
       applyAction(action);
     },
-    [state.draft.placements, state.draft.selectedPlacementId],
+    [state],
   );
 
   const undo = useCallback(() => {
     const snapshot = history.current.pop();
     if (!snapshot) return;
+    future.current.push({ kind: "state", state });
+    if (future.current.length > 40) future.current.shift();
+    setRedoDepth(future.current.length);
     setHistoryDepth(history.current.length);
     lastEdit.current = null;
     if (snapshot.kind === "state") {
@@ -224,7 +234,18 @@ export function WizardProvider({ children }: { children: ReactNode }) {
       return;
     }
     applyAction({ type: "patch", patch: snapshot });
-  }, []);
+  }, [state]);
+
+  const redo = useCallback(() => {
+    const snapshot = future.current.pop();
+    if (!snapshot) return;
+    history.current.push({ kind: "state", state });
+    if (history.current.length > 40) history.current.shift();
+    setHistoryDepth(history.current.length);
+    setRedoDepth(future.current.length);
+    lastEdit.current = null;
+    applyAction({ type: "hydrate", state: snapshot.kind === "state" ? snapshot.state : state });
+  }, [state]);
 
   // Prompt builds animate through several drafts. All but the last are applied
   // without touching history; the snapshot taken before the first one becomes
@@ -370,6 +391,8 @@ export function WizardProvider({ children }: { children: ReactNode }) {
     dispatch,
     undo,
     canUndo: historyDepth > 0,
+    redo,
+    canRedo: redoDepth > 0,
     steps,
     issues,
     stepIssues,

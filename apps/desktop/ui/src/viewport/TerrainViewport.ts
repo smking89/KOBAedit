@@ -404,6 +404,7 @@ export class TerrainViewport {
         radius: placement.flattenRadius,
         falloff: placement.flattenFalloff,
         flatten: placement.flatten,
+        visible: placement.visible !== false,
       })),
       splines: draft.splines.map((spline) => ({
         kind: spline.kind,
@@ -474,6 +475,7 @@ export class TerrainViewport {
         scale: placement.scale,
         radius: placement.flattenRadius,
         flatten: placement.flatten,
+        visible: placement.visible !== false,
       })),
       selected: draft.selectedPlacementId,
       splines: draft.splines,
@@ -806,14 +808,15 @@ export class TerrainViewport {
   private rebuildPrefabs(draft: WizardDraft): void {
     this.clearProxyGroup();
     this.clearInstancedGroup();
+    const visiblePlacements = draft.placements.filter((placement) => placement.visible !== false);
     const byAsset = new Map<string, PrefabPlacement[]>();
-    for (const placement of draft.placements) {
+    for (const placement of visiblePlacements) {
       const list = byAsset.get(placement.assetId) ?? [];
       list.push(placement);
       byAsset.set(placement.assetId, list);
     }
 
-    for (const placement of draft.placements) {
+    for (const placement of visiblePlacements) {
       // Draw the same extents validation uses: no extra clamping, because a
       // proxy smaller than the checked footprint would hide overhangs.
       const radius = Math.max(0.5, placement.collisionRadius || 0.5);
@@ -1490,6 +1493,29 @@ export class TerrainViewport {
     this.camera.lookAt(saved.target);
     this.controls.update();
     delete this.host.dataset.camera;
+    this.requestRender();
+  }
+
+  setGridVisible(visible: boolean): void {
+    if (this.grid) this.grid.visible = visible;
+    this.requestRender();
+  }
+
+  setHelpersVisible(visible: boolean): void {
+    this.markerGroup.visible = visible;
+    this.buildGroup.visible = visible;
+    this.requestRender();
+  }
+
+  toggleGrid(): void {
+    if (this.grid) this.grid.visible = !this.grid.visible;
+    this.requestRender();
+  }
+
+  toggleHelpers(): void {
+    const visible = !this.markerGroup.visible;
+    this.markerGroup.visible = visible;
+    this.buildGroup.visible = visible;
     this.requestRender();
   }
 
@@ -2253,16 +2279,27 @@ export class TerrainViewport {
     );
     const size = terrain.sizeMetres;
     const underground = this.underground;
+    // Monument work is a studio subject, not an outdoor scene: no sky, no water.
+    const monumentStudio = this.draft?.projectKind === "monument";
+    if (this.water) this.water.visible = !monumentStudio;
 
     const background = this.scene.background;
     if (background instanceof THREE.Color) {
       background.setHex(
-        underground ? UNDERGROUND_LIGHTING.fogColor : blendHex(scheme.sky, lighting.skyColor, 0.6),
+        monumentStudio
+          ? 0x121316
+          : underground
+            ? UNDERGROUND_LIGHTING.fogColor
+            : blendHex(scheme.sky, lighting.skyColor, 0.6),
       );
     }
     if (this.scene.fog instanceof THREE.Fog) {
       this.scene.fog.color.setHex(
-        underground ? UNDERGROUND_LIGHTING.fogColor : blendHex(scheme.fog, lighting.fogColor, 0.55),
+        monumentStudio
+          ? 0x121316
+          : underground
+            ? UNDERGROUND_LIGHTING.fogColor
+            : blendHex(scheme.fog, lighting.fogColor, 0.55),
       );
       const scale = size / 4500;
       this.scene.fog.near = underground ? UNDERGROUND_LIGHTING.fogNear : lighting.fogNear * scale;

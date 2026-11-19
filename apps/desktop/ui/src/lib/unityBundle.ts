@@ -2,10 +2,10 @@
  * Minimal Unity AssetBundle (UnityFS) reader.
  *
  * Parses the header, the block table and the asset directory, decompresses
- * uncompressed/LZ4 blocks and returns each node's raw bytes. LZMA-compressed
- * bundles are not decoded here (many Rust bundles use LZ4); callers get a
- * specific error so the UI can explain the limitation.
+ * uncompressed, LZ4 and LZMA blocks and returns each node's raw bytes.
  */
+
+import { lzmaDecompress } from "./lzma.ts";
 
 export interface BundleEntry {
   path: string;
@@ -120,7 +120,7 @@ export function lz4Decompress(source: Uint8Array, outputSize: number): Uint8Arra
 function decompress(data: Uint8Array, mode: number, outputSize: number): Uint8Array {
   if (mode === 0) return data.slice(0, outputSize);
   if (mode === 2 || mode === 3) return lz4Decompress(data, outputSize);
-  if (mode === 1) throw new Error("LZMA-compressed Unity bundles are not supported yet");
+  if (mode === 1) return lzmaDecompress(data, outputSize);
   throw new Error(`unknown Unity bundle compression ${mode}`);
 }
 
@@ -193,11 +193,17 @@ export function parseUnityBundle(data: Uint8Array): UnityBundle {
     return { path: node.path, bytes: flat.slice(node.offset, node.offset + node.size) };
   });
 
+  // The header's info mode is often "none" even when the payload blocks are
+  // LZ4, so report every mode actually used.
+  const names = ["none", "LZMA", "LZ4", "LZ4HC"];
+  const modes = Array.from(new Set([infoMode, ...blocks.map((block) => block.mode)]));
+  const compression = modes.map((mode) => names[mode] ?? `mode ${mode}`).join(" + ");
+
   return {
     format: magic,
     version,
     unityVersion: unityRevision || unityVersion,
-    compression: ["none", "LZMA", "LZ4", "LZ4HC"][infoMode] ?? `mode ${infoMode}`,
+    compression,
     entries,
   };
 }
