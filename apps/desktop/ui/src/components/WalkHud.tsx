@@ -51,7 +51,12 @@ export function WalkHud({ branding }: { branding: CreatorBranding }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Enter" && event.target === inputRef.current) return;
-      if (event.key === "/" && document.activeElement !== inputRef.current) {
+      const target = event.target as HTMLElement | null;
+      const typing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable === true;
+      if (event.key === "/" && !typing) {
         event.preventDefault();
         inputRef.current?.focus();
       }
@@ -113,7 +118,10 @@ export function WalkHud({ branding }: { branding: CreatorBranding }) {
       {panel !== "none" && (
         <section className="walk-panel" aria-label={`${panel} preview`}>
           <header>
-            <strong>{panel === "shop" ? "Shop & Marketplace" : panel === "skins" ? "Player Skins" : "Trade Handshake"}</strong>
+            <strong>
+              {panel === "shop" ? "Shop & Marketplace" : panel === "skins" ? "Player Skins" : "Trade Handshake"}
+              <em className="walk-demo">Demo data</em>
+            </strong>
             <button type="button" onClick={() => setPanel("none")}>
               Close
             </button>
@@ -226,9 +234,13 @@ export function WalkHud({ branding }: { branding: CreatorBranding }) {
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
+              event.stopPropagation();
               run();
             }
-            if (event.key === "Escape") event.currentTarget.blur();
+            if (event.key === "Escape") {
+              event.stopPropagation();
+              event.currentTarget.blur();
+            }
           }}
         />
       </div>

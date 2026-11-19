@@ -291,3 +291,33 @@ export function commandToPrompt(command: ParsedCommand): string {
 export function commandLabel(id: string): string {
   return COMMAND_REGISTRY.find((command) => command.id === id)?.label ?? id;
 }
+
+/** Project-scale sentences belong to the legacy generator, not the command path. */
+export function wantsFullProject(text: string): boolean {
+  return (
+    /\b(build|project|base|outpost|loot|npcs?|full map|everything|town|compound|village|monuments?|forest|dense)\b/i.test(
+      text,
+    ) && !text.trim().startsWith("/")
+  );
+}
+
+/**
+ * Routing guard: explicit shortcuts always run as commands; attachments and
+ * project-scale sentences go to `generateProject`. Placement, cave and skin
+ * commands are always treated as targeted even when the sentence says "build".
+ */
+export function shouldRouteToLegacy(
+  text: string,
+  commands: ParsedCommand[],
+  hasAttachments = false,
+): boolean {
+  if (text.trim().startsWith("/")) return false;
+  if (hasAttachments) return true;
+  if (!wantsFullProject(text)) return false;
+  // Terrain + road keywords alone don't make a prompt "targeted": a project
+  // sentence like "island map with 8 monuments and two roads" must still reach
+  // the generator, which creates the monuments too.
+  return !commands.some(
+    (command) => command.id !== "map.generate" && command.id !== "map.connectRoads",
+  );
+}

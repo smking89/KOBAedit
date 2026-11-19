@@ -7,7 +7,13 @@ import { readAttachment, revokeAttachment } from "./attachments";
 import { refreshProjectThumbnail } from "../utils/thumbnailQueue";
 import { generateProject } from "./generate";
 import { applyCommand } from "../lib/commands";
-import { splitSegments, parsePromptSegment, commandLabel, commandToPrompt } from "../lib/promptParser";
+import {
+  splitSegments,
+  parsePromptSegment,
+  commandLabel,
+  commandToPrompt,
+  shouldRouteToLegacy,
+} from "../lib/promptParser";
 import { parseAppSegment, type AppEffect } from "../lib/appCommands";
 import type { WizardStepId } from "../wizard/types";
 import type { KobaAttachment, KobaMessage } from "./types";
@@ -102,13 +108,6 @@ const SUGGESTIONS = [
 ];
 
 const MAX_ATTACHMENTS = 6;
-
-/** Sentences that ask for a whole project belong to the legacy generator. */
-function wantsFullProject(text: string): boolean {
-  return /\b(build|project|base|outpost|loot|npcs?|full map|everything|town|compound|village|monuments?|forest|dense)\b/i.test(
-    text,
-  ) && !text.trim().startsWith("/");
-}
 
 /** Chips that re-run a command, plus a bumped numeric variation. */
 function receiptChips(commands: ParsedCommand[]): { label: string; prompt: string }[] {
@@ -368,13 +367,13 @@ export function KobaPanel({
       const appEffects = routed.flatMap((entry) => entry.effects ?? []);
       const draftCommands = routed.filter((entry) => !entry.effects && entry.command);
 
-      const onlyTerrainCommand =
-        draftCommands.length === 1 && draftCommands[0]?.command?.id === "map.generate";
       const legacyProjectRequest =
         appEffects.length === 0 &&
-        draftCommands.length <= 1 &&
-        (draftCommands.length === 0 || onlyTerrainCommand) &&
-        (wantsFullProject(text) || sentAttachments.length > 0);
+        shouldRouteToLegacy(
+          text,
+          draftCommands.map((entry) => entry.command!),
+          sentAttachments.length > 0,
+        );
 
       if (!legacyProjectRequest && (appEffects.length > 0 || draftCommands.length > 0)) {
         const receipts: string[] = [];

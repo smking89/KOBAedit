@@ -4903,3 +4903,12 @@ input[type="range"]::-moz-range-thumb {
 .walk-chat input::placeholder {
   color: rgba(255, 255, 255, 0.45);
 }
+
+.walk-demo {
+  margin-left: 8px;
+  font-style: normal;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(217, 162, 75, 0.9);
+}
