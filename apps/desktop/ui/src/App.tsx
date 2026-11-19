@@ -351,7 +351,8 @@ export default function App() {
       if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
       if ((event.key === "z" || event.key === "Z") && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        undo();
+        const label = undo();
+        if (label) setSnippetNote(`Undid: ${label}`);
         return;
       }
       if ((event.key === "Delete" || event.key === "Backspace") && state.draft.selectedPlacementId) {
@@ -503,8 +504,14 @@ export default function App() {
                       if (label === "File" && item === "Save .koba") void onSave();
                       if (label === "File" && item === "Import .prefab / .map") setAssetsOpen(true);
                       if (label === "File" && item === "Open…") setAssetsOpen(true);
-                      if (label === "Edit" && item === "Undo") undo();
-                      if (label === "Edit" && item === "Redo") redo();
+                      if (label === "Edit" && item === "Undo") {
+                        const undone = undo();
+                        if (undone) setSnippetNote(`Undid: ${undone}`);
+                      }
+                      if (label === "Edit" && item === "Redo") {
+                        const redone = redo();
+                        if (redone) setSnippetNote(`Redid: ${redone}`);
+                      }
                       if (label === "View" && item === "Frame All") {
                         groundTools.current?.focus(0, 0, Math.max(60, state.draft.terrain.sizeMetres * 0.45));
                       }

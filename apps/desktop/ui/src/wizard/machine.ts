@@ -831,6 +831,7 @@ type WizardAction =
   | { type: "updateSpline"; id: string; patch: Partial<RouteSpline> }
   | { type: "removeSpline"; id: string }
   | { type: "addStrokes"; strokes: TerrainStroke[] }
+  | { type: "removeStrokes"; ids: string[] }
   | { type: "addLayer"; kind: TerrainLayerKind }
   | { type: "removeLayer"; id: string }
   | { type: "updateLayer"; id: string; patch: Partial<Omit<TerrainLayer, "id" | "strokes">> }
@@ -997,6 +998,22 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
           layers,
           activeLayerId: targetId,
           sculptStrokes: terrain.sculptStrokes + action.strokes.length,
+        },
+      });
+    }
+
+    case "removeStrokes": {
+      const ids = new Set(action.ids);
+      const terrain = state.draft.terrain;
+      return markDirty(state, {
+        ...state.draft,
+        terrain: {
+          ...terrain,
+          strokes: (terrain.strokes ?? []).filter((stroke) => !ids.has(stroke.id)),
+          layers: (terrain.layers ?? []).map((layer) => ({
+            ...layer,
+            strokes: layer.strokes.filter((stroke) => !ids.has(stroke.id)),
+          })),
         },
       });
     }

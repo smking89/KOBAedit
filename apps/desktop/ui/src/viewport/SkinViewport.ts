@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import cubeFixtureUrl from "../../tests/fixtures/fixture-cube.glb?url";
 import { isTauri, loadCachedMeshBytes } from "../lib/ipc";
 import { prefabThumbnailHash } from "../utils/thumbnailQueue";
 
@@ -242,9 +243,10 @@ export class SkinViewport {
     this.loading = true;
     try {
       let bytes = await loadCachedMeshBytes(prefabThumbnailHash(assetId));
-      if (!bytes && !isTauri()) {
-        // Browser preview fallback: a local fixture can stand in for the cache.
-        const response = await fetch(`/models/${assetId.split("/").pop() ?? ""}`);
+      if (!bytes && !isTauri() && assetId.endsWith("/ak47.glb")) {
+        // Browser preview fallback: a clearly-labelled cube fixture stands in
+        // for the native cached mesh. Other meshes keep the procedural proxy.
+        const response = await fetch(cubeFixtureUrl);
         if (response.ok) bytes = new Uint8Array(await response.arrayBuffer());
       }
       if (!bytes || this.disposed || token !== this.loadToken) return;

@@ -24,6 +24,7 @@ import {
 } from "./machine";
 import type {
   PrefabPlacement,
+  TerrainLayer,
   ProjectKind,
   ValidationIssue,
   WizardDraft,
@@ -56,9 +57,9 @@ interface WizardContextValue {
   state: WizardState;
   dispatch: (action: WizardAction) => void;
   /** Restore the placements as they were before the last map edit. */
-  undo: () => void;
+  undo: () => string | null;
   canUndo: boolean;
-  redo: () => void;
+  redo: () => string | null;
   canRedo: boolean;
   steps: WizardStepId[];
   issues: ValidationIssue[];
@@ -174,78 +175,181 @@ function loadInitialState(): WizardState {
 export function WizardProvider({ children }: { children: ReactNode }) {
   const [state, applyAction] = useReducer(wizardReducer, undefined, loadInitialState);
 
-  // Placement edits are the ones made directly on the map (drop, select,
-  // delete, nudge), so that is the history a creator expects to undo there.
-  type UndoEntry =
-    | { kind: "placements"; placements: PrefabPlacement[]; selectedPlacementId: string | null }
-    | { kind: "state"; state: WizardState };
-  const history = useRef<UndoEntry[]>([]);
-  const future = useRef<UndoEntry[]>([]);
+  type HistoryEntry = { label: string; undo: WizardAction; redo: WizardAction };
+  const history = useRef<HistoryEntry[]>([]);
+  const future = useRef<HistoryEntry[]>([]);
   const lastEdit = useRef<{ key: string; at: number } | null>(null);
   const [historyDepth, setHistoryDepth] = useState(0);
   const [redoDepth, setRedoDepth] = useState(0);
 
+  const labelFor = (action: WizardAction): string => {
+    switch (action.type) {
+      case "addLayer": return "Add terrain layer";
+      case "removeLayer": return "Remove terrain layer";
+      case "addStrokes": return "Paint terrain";
+      case "removeStrokes": return "Erase terrain strokes";
+      case "addPlacement": return "Place object";
+      case "removePlacement": return "Delete object";
+      case "updatePlacement": return "Transform object";
+      case "addSpline": return "Add spline";
+      case "removeSpline": return "Remove spline";
+      case "addDecal": return "Add decal";
+      case "removeDecal": return "Remove decal";
+      case "patchTerrain": return "Edit terrain";
+      case "patchSkin": return "Edit skin";
+      case "patchSkinWear": return "Edit wear";
+      case "patchLoot": return "Edit loot";
+      case "setLighting": return "Change lighting";
+      default: return action.type;
+    }
+  };
+
+  const semanticKey = (action: WizardAction): string => {
+    const fields = (patch: object) => Object.keys(patch).sort().join("+");
+    switch (action.type) {
+      case "updatePlacement":
+      case "updateLayer":
+      case "updateSpline":
+      case "updateIONode":
+      case "updateMaterialLayer":
+      case "updateVendingOverride":
+        return `${action.type}:${action.id}:${fields(action.patch)}`;
+      case "patchTerrain":
+      case "patchSkin":
+      case "patchLoot":
+      case "patchSkinWear":
+      case "patch":
+      case "setLighting":
+        return `${action.type}:${fields(action.patch)}`;
+      default:
+        return action.type;
+    }
+  };
+
+  /** Delta inverse where the action carries enough information. */
+  const inverseFor = (action: WizardAction, before: WizardState): WizardAction => {
+    switch (action.type) {
+      case "addStrokes":
+        return { type: "removeStrokes", ids: action.strokes.map((stroke) => stroke.id) };
+      case "addDecal":
+        return { type: "removeDecal", id: action.decal.id };
+      case "removeDecal": {
+        const decal = before.draft.skin.decals.find((item) => item.id === action.id);
+        return decal ? { type: "addDecal", decal } : { type: "hydrate", state: before };
+      }
+      case "patchTerrain": {
+        const old: Partial<WizardDraft["terrain"]> = {};
+        for (const key of Object.keys(action.patch) as (keyof WizardDraft["terrain"])[]) {
+          (old as Record<string, unknown>)[key] = before.draft.terrain[key];
+        }
+        return { type: "patchTerrain", patch: old };
+      }
+      case "patchSkin": {
+        const old: Partial<WizardDraft["skin"]> = {};
+        for (const key of Object.keys(action.patch) as (keyof WizardDraft["skin"])[]) {
+          (old as Record<string, unknown>)[key] = before.draft.skin[key];
+        }
+        return { type: "patchSkin", patch: old };
+      }
+      case "patchLoot": {
+        const old: Partial<WizardDraft["loot"]> = {};
+        for (const key of Object.keys(action.patch) as (keyof WizardDraft["loot"])[]) {
+          (old as Record<string, unknown>)[key] = before.draft.loot[key];
+        }
+        return { type: "patchLoot", patch: old };
+      }
+      case "patch": {
+        const old: Partial<WizardDraft> = {};
+        for (const key of Object.keys(action.patch) as (keyof WizardDraft)[]) {
+          (old as Record<string, unknown>)[key] = before.draft[key];
+        }
+        return { type: "patch", patch: old };
+      }
+      case "updatePlacement": {
+        const current = before.draft.placements.find((item) => item.id === action.id);
+        if (!current) return { type: "hydrate", state: before };
+        const old: Partial<PrefabPlacement> = {};
+        for (const key of Object.keys(action.patch) as (keyof PrefabPlacement)[]) {
+          (old as Record<string, unknown>)[key] = current[key];
+        }
+        return { type: "updatePlacement", id: action.id, patch: old };
+      }
+      case "updateLayer": {
+        const current = (before.draft.terrain.layers ?? []).find((item) => item.id === action.id);
+        if (!current) return { type: "hydrate", state: before };
+        const old: Partial<TerrainLayer> = {};
+        for (const key of Object.keys(action.patch) as (keyof TerrainLayer)[]) {
+          (old as Record<string, unknown>)[key] = current[key];
+        }
+        return { type: "updateLayer", id: action.id, patch: old };
+      }
+      default:
+        return { type: "hydrate", state: before };
+    }
+  };
+
   const dispatch = useCallback(
     (action: WizardAction) => {
-      // Everything that changes project content is undoable. Navigation,
-      // selection and transient modes are not.
       const transient = new Set([
-        "hydrate",
-        "selectPlacement",
-        "setActiveLayer",
-        "toggleStudio",
-        "setWalkMode",
-        "next",
-        "back",
-        "goTo",
-        "markSaved",
-        "applyGenerated",
+        "hydrate", "selectPlacement", "setActiveLayer", "toggleStudio",
+        "setWalkMode", "markSaved", "applyGenerated",
       ]);
-      if (!transient.has(action.type)) {
-        const key = `${action.type}:${"id" in action ? action.id ?? "" : ""}`;
-        const now = Date.now();
-        const coalesce = lastEdit.current?.key === key && now - lastEdit.current.at < 900;
-        if (!coalesce) {
-          history.current.push({ kind: "state", state });
-          if (history.current.length > 40) history.current.shift();
-          setHistoryDepth(history.current.length);
-          future.current = [];
-          setRedoDepth(0);
-        }
-        lastEdit.current = { key, at: now };
-      } else {
+      if (transient.has(action.type)) {
         lastEdit.current = null;
+        applyAction(action);
+        return;
       }
+      if (action.type === "next" || action.type === "back" || action.type === "goTo") {
+        future.current = [];
+        setRedoDepth(0);
+        lastEdit.current = null;
+        applyAction(action);
+        return;
+      }
+
+      const key = semanticKey(action);
+      const now = Date.now();
+      const coalesce = lastEdit.current?.key === key && now - lastEdit.current.at < 900;
+      if (coalesce && history.current.length) {
+        // Keep the original inverse; extend the redo action to the latest edit.
+        const top = history.current[history.current.length - 1];
+        history.current[history.current.length - 1] = { ...top, redo: action };
+      } else {
+        history.current.push({ label: labelFor(action), undo: inverseFor(action, state), redo: action });
+        while (history.current.length > 25) history.current.shift();
+        setHistoryDepth(history.current.length);
+        future.current = [];
+        setRedoDepth(0);
+      }
+      lastEdit.current = { key, at: now };
       applyAction(action);
     },
     [state],
   );
 
-  const undo = useCallback(() => {
-    const snapshot = history.current.pop();
-    if (!snapshot) return;
-    future.current.push({ kind: "state", state });
-    if (future.current.length > 40) future.current.shift();
+  const undo = useCallback((): string | null => {
+    const entry = history.current.pop();
+    if (!entry) return null;
+    future.current.push(entry);
+    while (future.current.length > 25) future.current.shift();
     setRedoDepth(future.current.length);
     setHistoryDepth(history.current.length);
     lastEdit.current = null;
-    if (snapshot.kind === "state") {
-      applyAction({ type: "hydrate", state: snapshot.state });
-      return;
-    }
-    applyAction({ type: "patch", patch: snapshot });
-  }, [state]);
+    applyAction(entry.undo);
+    return entry.label;
+  }, []);
 
-  const redo = useCallback(() => {
-    const snapshot = future.current.pop();
-    if (!snapshot) return;
-    history.current.push({ kind: "state", state });
-    if (history.current.length > 40) history.current.shift();
+  const redo = useCallback((): string | null => {
+    const entry = future.current.pop();
+    if (!entry) return null;
+    history.current.push(entry);
+    while (history.current.length > 25) history.current.shift();
     setHistoryDepth(history.current.length);
     setRedoDepth(future.current.length);
     lastEdit.current = null;
-    applyAction({ type: "hydrate", state: snapshot.kind === "state" ? snapshot.state : state });
-  }, [state]);
+    applyAction(entry.redo);
+    return entry.label;
+  }, []);
 
   // Prompt builds animate through several drafts. All but the last are applied
   // without touching history; the snapshot taken before the first one becomes
@@ -264,9 +368,15 @@ export function WizardProvider({ children }: { children: ReactNode }) {
     const snapshot = stagedSnapshot.current;
     stagedSnapshot.current = null;
     if (snapshot) {
-      history.current.push({ kind: "state", state: snapshot });
-      if (history.current.length > 40) history.current.shift();
+      history.current.push({
+        label: "Generate build",
+        undo: { type: "hydrate", state: snapshot },
+        redo: { type: "applyGenerated", draft, step },
+      });
+      while (history.current.length > 25) history.current.shift();
       setHistoryDepth(history.current.length);
+      future.current = [];
+      setRedoDepth(0);
     }
     applyAction({ type: "applyGenerated", draft, step });
   }, []);
