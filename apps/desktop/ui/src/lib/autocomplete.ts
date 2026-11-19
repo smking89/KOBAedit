@@ -51,6 +51,26 @@ const SLOTS: Record<string, { key: string; hint: string }[]> = {
   "skin.setLighting": [{ key: "preset", hint: "studio, dusk, midnight" }],
 };
 
+const VALUES: Record<string, Record<string, string[]>> = {
+  "map.generate": { biome: ["temperate", "arctic", "arid", "jungle"] },
+  "map.placeMonument": {
+    type: ["airfield", "harbor", "launch site", "military"],
+    location: ["center", "coast", "north", "south", "east", "west"],
+  },
+  "map.connectRoads": { type: ["road", "river", "rail"], ringRoad: ["true", "false"] },
+  "monument.assemble": { preset: ["small", "medium", "large"] },
+  "cave.extrudeSpline": {
+    direction: ["north", "south", "east", "west"],
+    preset: ["mineshaft", "natural", "bunker"],
+  },
+  "skin.applyBase": { finish: ["matte", "gloss", "metallic"], tint: ["red", "white", "black", "rust"] },
+  "skin.setLighting": { preset: ["studio", "dusk", "midnight"] },
+};
+
+export function slashSlotValues(commandId: string, key: string): string[] {
+  return VALUES[commandId]?.[key] ?? [];
+}
+
 export function slashSlots(commandId: string): { key: string; hint: string }[] {
   return SLOTS[commandId] ?? [];
 }
@@ -80,6 +100,25 @@ export function slashCompletion(text: string, caret = text.length): SlashComplet
   const commandId = head.slice(0, from).trim().split(/\s+/)[0]?.replace(/^\//, "") ?? "";
   const [key, value] = token.split("=");
   const needle = (key ?? "").toLowerCase();
+
+  // Once "=" is typed, complete the value itself.
+  if (value !== undefined) {
+    const values = slashSlotValues(commandId, key ?? "").filter((candidate) =>
+      candidate.toLowerCase().startsWith(value.toLowerCase()),
+    );
+    if (values.length) {
+      return {
+        items: values.map((candidate) => ({
+          value: `${key}=${candidate}`,
+          label: candidate,
+          detail: `${key} value`,
+          kind: "slot" as const,
+        })),
+        from,
+        to: caret,
+      };
+    }
+  }
   const used = new Set(
     head
       .slice(0, from)
@@ -107,4 +146,19 @@ export function applyCompletion(
 ): { text: string; caret: number } {
   const next = text.slice(0, completion.from) + suggestion.value + text.slice(completion.to);
   return { text: next, caret: completion.from + suggestion.value.length };
+}
+
+const WALK_COMMANDS = [
+  { value: "/shop", hint: "Open the shop terminal" },
+  { value: "/skin", hint: "Account-bound player skins" },
+  { value: "/trade", hint: "Two-player trade handshake" },
+  { value: "/safe", hint: "Show the safe-zone notice" },
+  { value: "/radio", hint: "Show the radiation notice" },
+  { value: "/help", hint: "List in-game commands" },
+];
+
+/** In-game chat completion: only complete the first token of a slash command. */
+export function walkSlashSuggestions(input: string): { value: string; hint: string }[] {
+  if (!input.startsWith("/") || input.includes(" ")) return [];
+  return WALK_COMMANDS.filter((command) => command.value.startsWith(input.toLowerCase()));
 }

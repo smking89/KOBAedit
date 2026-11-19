@@ -24,6 +24,7 @@ export type AppEffect =
   | { kind: "watermark"; patch: Partial<WatermarkSettings>; note: string }
   | { kind: "brand"; patch: Partial<CreatorBranding>; note: string }
   | { kind: "snippet-still"; filename?: string; note: string }
+  | { kind: "radar-still"; filename?: string; note: string }
   | { kind: "snippet-turntable"; seconds: number; note: string }
   | { kind: "promo"; request: PromoRequest; note: string }
   | { kind: "timeline"; open: boolean; note: string }
@@ -170,10 +171,10 @@ export function parseAppSegment(segment: string): AppEffect[] | null {
     }
     if (/\b(radar|top[- ]down|ortho|orthographic)\b/.test(text)) {
       return [
-        { kind: "snippet-still", filename: "radar_preview.png", note: "Radar still captured" },
         {
-          kind: "unavailable",
-          note: "Top-down ortho camera is not wired to the viewport yet; captured the current view instead.",
+          kind: "radar-still",
+          filename: "radar_preview.png",
+          note: "Radar still captured from the top-down camera",
         },
       ];
     }

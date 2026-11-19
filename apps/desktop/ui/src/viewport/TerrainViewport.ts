@@ -189,6 +189,11 @@ export class TerrainViewport {
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
+  private radarSaved: {
+    position: THREE.Vector3;
+    target: THREE.Vector3;
+    up: THREE.Vector3;
+  } | null = null;
   private terrain: THREE.Mesh | null = null;
   private water: THREE.Mesh | null = null;
   private ambientLight: THREE.AmbientLight;
@@ -1453,6 +1458,37 @@ export class TerrainViewport {
   /** Nearest tunnel section under a point, or null outside every tunnel. */
   private walkKey(code: string): boolean {
     return this.walkKeys.has(code) || this.walkVirtual.has(code);
+  }
+
+  /** Straight-down orthographic-feeling radar view, restored afterwards. */
+  setRadarCamera(): void {
+    if (!this.radarSaved) {
+      this.radarSaved = {
+        position: this.camera.position.clone(),
+        target: this.controls.target.clone(),
+        up: this.camera.up.clone(),
+      };
+    }
+    const target = this.controls.target.clone();
+    const height = Math.max(500, this.camera.position.distanceTo(target) * 1.6);
+    this.camera.up.set(0, 0, -1);
+    this.camera.position.set(target.x, target.y + height, target.z + 0.01);
+    this.controls.target.copy(target);
+    this.camera.lookAt(target);
+    this.controls.update();
+    this.requestRender();
+  }
+
+  restoreRadarCamera(): void {
+    const saved = this.radarSaved;
+    if (!saved) return;
+    this.radarSaved = null;
+    this.camera.up.copy(saved.up);
+    this.camera.position.copy(saved.position);
+    this.controls.target.copy(saved.target);
+    this.camera.lookAt(saved.target);
+    this.controls.update();
+    this.requestRender();
   }
 
   /** Theme backdrop only; camera, build and walk state are untouched. */

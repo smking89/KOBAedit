@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { CreatorBranding } from "../lib/branding";
+import { walkSlashSuggestions } from "../lib/autocomplete";
 
 type Panel = "none" | "shop" | "skins" | "trade";
 
@@ -40,7 +41,9 @@ export function WalkHud({ branding }: { branding: CreatorBranding }) {
     locked: false,
     done: false,
   });
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const suggestions = walkSlashSuggestions(input);
 
   const notify = (text: string, tone: Notice["tone"] = "info") => {
     const id = noticeId++;
@@ -225,13 +228,52 @@ export function WalkHud({ branding }: { branding: CreatorBranding }) {
             <span key={`${line}-${index}`}>{line}</span>
           ))}
         </div>
+        {suggestions.length > 0 && (
+          <div className="walk-suggestions" role="listbox" aria-label="In-game command suggestions">
+            {suggestions.map((suggestion, index) => (
+              <button
+                key={suggestion.value}
+                type="button"
+                role="option"
+                aria-selected={index === suggestionIndex}
+                className={index === suggestionIndex ? "is-active" : undefined}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  setInput(`${suggestion.value} `);
+                  inputRef.current?.focus();
+                }}
+              >
+                <span>{suggestion.value}</span>
+                <em>{suggestion.hint}</em>
+              </button>
+            ))}
+          </div>
+        )}
         <input
           ref={inputRef}
           value={input}
           placeholder="/shop, /skin, /trade, /safe, /radio"
           aria-label="In-game command"
-          onChange={(event) => setInput(event.target.value)}
+          onChange={(event) => {
+            setInput(event.target.value);
+            setSuggestionIndex(0);
+          }}
           onKeyDown={(event) => {
+            if (suggestions.length > 0) {
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                setSuggestionIndex((current) => {
+                  const next = current + (event.key === "ArrowDown" ? 1 : -1);
+                  return (next + suggestions.length) % suggestions.length;
+                });
+                return;
+              }
+              if (event.key === "Tab") {
+                event.preventDefault();
+                setInput(`${suggestions[Math.min(suggestionIndex, suggestions.length - 1)]!.value} `);
+                return;
+              }
+            }
             if (event.key === "Enter") {
               event.preventDefault();
               event.stopPropagation();

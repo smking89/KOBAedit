@@ -17,6 +17,9 @@ export interface GroundTools {
   focus: (x: number, z: number, radius: number) => void;
   /** Snippet capture: current frame with UI helpers hidden. */
   captureFrame: () => HTMLCanvasElement | null;
+  /** Top-down radar view; pair with restoreRadarCamera. */
+  setRadarCamera: () => void;
+  restoreRadarCamera: () => void;
   /** Snippet/promo recording to WebM with a watermark painter. */
   recordTour: (options: {
     shots: { x: number; z: number; radius: number; seconds: number }[];
@@ -140,6 +143,8 @@ export function Viewport({
           setWalkInput: (input) => viewport.setWalkInput(input),
           focus: (x, z, radius) => viewport.focusOn(x, z, radius),
           captureFrame: () => viewport.captureFrame(),
+          setRadarCamera: () => viewport.setRadarCamera(),
+          restoreRadarCamera: () => viewport.restoreRadarCamera(),
           recordTour: (options) => viewport.recordTour(options),
         });
         return () => {

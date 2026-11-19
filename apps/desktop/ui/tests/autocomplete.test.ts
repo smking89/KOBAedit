@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyCompletion, slashCompletion } from "../src/lib/autocomplete.ts";
+import { applyCompletion, slashCompletion, walkSlashSuggestions } from "../src/lib/autocomplete.ts";
 
 test("completes command ids after a slash", () => {
   const result = slashCompletion("/map.pla");
@@ -31,4 +31,21 @@ test("applies a completion and returns the caret position", () => {
   const applied = applyCompletion("/cave", completion, completion.items[0]!);
   assert.equal(applied.text, "/cave.extrudeSpline ");
   assert.equal(applied.caret, applied.text.length);
+});
+
+test("completes slot values after an equals sign", () => {
+  const biome = slashCompletion("/map.generate biome=arc");
+  assert.ok(biome);
+  assert.deepEqual(biome.items.map((item) => item.value), ["biome=arctic"]);
+
+  const ring = slashCompletion("/map.connectRoads ringRoad=");
+  assert.ok(ring);
+  assert.deepEqual(ring.items.map((item) => item.label), ["true", "false"]);
+});
+
+test("walk chat completes in-game commands only on the first token", () => {
+  assert.deepEqual(walkSlashSuggestions("/s").map((item) => item.value), ["/shop", "/skin", "/safe"]);
+  assert.deepEqual(walkSlashSuggestions("/sh").map((item) => item.value), ["/shop"]);
+  assert.deepEqual(walkSlashSuggestions("/shop "), []);
+  assert.deepEqual(walkSlashSuggestions("hello"), []);
 });

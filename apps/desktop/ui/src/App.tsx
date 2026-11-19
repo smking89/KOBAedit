@@ -179,6 +179,19 @@ export default function App() {
           await captureSnippet("still", { filename: effect.filename });
           receipts.push(effect.note + ".");
           break;
+        case "radar-still": {
+          const tools = groundTools.current;
+          if (!tools) {
+            receipts.push("Viewport is not ready for a radar capture.");
+            break;
+          }
+          tools.setRadarCamera();
+          await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+          await captureSnippet("still", { filename: effect.filename });
+          tools.restoreRadarCamera();
+          receipts.push(effect.note + ".");
+          break;
+        }
         case "snippet-turntable":
           await captureSnippet("loop", { seconds: effect.seconds });
           receipts.push(effect.note + ".");

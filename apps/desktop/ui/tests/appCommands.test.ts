@@ -66,12 +66,12 @@ test("snippet still and turntable commands", () => {
   if (turntable.kind === "snippet-turntable") assert.equal(turntable.seconds, 5);
 });
 
-test("radar snippet keeps the filename and flags the missing camera", () => {
+test("radar snippet uses the top-down camera", () => {
   const effects = parseAppSegment("Capture top-down radar snippet of this monument");
   assert.ok(effects);
-  assert.equal(effects![0].kind, "snippet-still");
-  if (effects![0].kind === "snippet-still") assert.equal(effects![0].filename, "radar_preview.png");
-  assert.ok(effects!.some((effect) => effect.kind === "unavailable"));
+  assert.equal(effects![0].kind, "radar-still");
+  if (effects![0].kind === "radar-still") assert.equal(effects![0].filename, "radar_preview.png");
+  assert.ok(!effects!.some((effect) => effect.kind === "unavailable"));
 });
 
 test("promo generation picks length, style and beat sync", () => {

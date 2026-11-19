@@ -4929,3 +4929,34 @@ input[type="range"]::-moz-range-thumb {
 .koba-slash button.is-active {
   color: var(--accent);
 }
+
+.walk-suggestions {
+  display: grid;
+  gap: 2px;
+  padding: 4px;
+  background: rgba(13, 14, 17, 0.72);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+}
+
+.walk-suggestions button {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 6px;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 11px;
+  text-align: left;
+}
+
+.walk-suggestions button em {
+  font-style: normal;
+  opacity: 0.5;
+}
+
+.walk-suggestions button.is-active {
+  background: rgba(248, 8, 1, 0.22);
+  color: #ffffff;
+}
