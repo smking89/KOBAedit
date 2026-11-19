@@ -25,6 +25,13 @@ export interface KobaAttachment {
   previewUrl?: string;
   image?: ImageProfile;
   zip?: ZipSummary;
+  /** Unity AssetBundle summary when the attachment was a real .bundle. */
+  unity?: {
+    format: string;
+    unityVersion: string;
+    compression: string;
+    assetBytes: number;
+  };
 }
 
 export interface KobaGeneration {

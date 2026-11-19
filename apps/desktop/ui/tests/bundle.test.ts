@@ -18,10 +18,9 @@ test("reads .bundle archives as project bundles", async () => {
   assert.deepEqual(attachment.zip?.prefabFiles, ["prefabs/harbor.prefab"]);
 });
 
-test("rejects real Unity AssetBundles with an actionable message", async () => {
+test("reports unpackable Unity bundles instead of silently accepting them", async () => {
   const header = new Uint8Array(64);
   header.set([...new TextEncoder().encode("UnityFS\0")], 0);
   const file = new File([header], "shared.bundle", { type: "application/octet-stream" });
-  await assert.rejects(readAttachment(file), /real Unity AssetBundle \(UnityFS\)/);
-  await assert.rejects(readAttachment(file), /Bundles folder/);
+  await assert.rejects(readAttachment(file), /could not be unpacked/);
 });

@@ -1,4 +1,5 @@
 import { unzipSync } from "fflate";
+import { parseUnityBundle } from "../lib/unityBundle.ts";
 
 import type { WizardDraft } from "../wizard/types";
 import type { ImageProfile, KobaAttachment } from "./types";
@@ -178,12 +179,46 @@ export async function readAttachment(file: File): Promise<KobaAttachment> {
 
   const raw = new Uint8Array(await file.arrayBuffer());
   const magic = new TextDecoder().decode(raw.slice(0, 8));
-  if (/^Unity(FS|Web|Raw|AB)/.test(magic)) {
-    throw new Error(
-      `${file.name} is a real Unity AssetBundle (${magic.replace(/\0+$/, "")}). ` +
-        "KOBA EDIT cannot unpack UnityFS inside the browser: point the bundle scanner at your Rust Bundles folder, " +
-        "or attach the extracted .prefab/.map files or a project .zip/.bundle archive.",
-    );
+  if (/^Unity(FS|Web|Raw)/.test(magic)) {
+    let bundle;
+    try {
+      bundle = parseUnityBundle(raw);
+    } catch (error) {
+      throw new Error(
+        `${file.name} is a Unity AssetBundle that could not be unpacked: ${String(error)}`,
+      );
+    }
+    const names = bundle.entries.map((entry) => entry.path);
+    if (names.length > MAX_ZIP_ENTRIES) {
+      throw new Error(`${file.name} contains more than ${MAX_ZIP_ENTRIES} assets.`);
+    }
+    const decoder = new TextDecoder();
+    let projectDraft: WizardDraft | null = null;
+    for (const entry of bundle.entries) {
+      if (!/(^|\/)(project|draft)\.json$/i.test(entry.path)) continue;
+      if (entry.bytes.byteLength > 4 * 1024 * 1024) continue;
+      projectDraft = extractDraft(decoder.decode(entry.bytes));
+      if (projectDraft) break;
+    }
+    return {
+      id: uid(),
+      name: file.name,
+      kind: "zip",
+      bytes: file.size,
+      unity: {
+        format: bundle.format,
+        unityVersion: bundle.unityVersion,
+        compression: bundle.compression,
+        assetBytes: bundle.entries.reduce((sum, entry) => sum + entry.bytes.byteLength, 0),
+      },
+      zip: {
+        entries: names.length,
+        names: names.slice(0, 80),
+        mapFiles: names.filter((name) => name.toLowerCase().endsWith(".map")),
+        prefabFiles: names.filter((name) => name.toLowerCase().endsWith(".prefab")),
+        projectDraft,
+      },
+    };
   }
 
   let files: Record<string, Uint8Array>;
