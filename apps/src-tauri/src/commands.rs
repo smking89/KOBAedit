@@ -261,7 +261,8 @@ pub(crate) fn python(project_root: &Path) -> PathBuf {
             return candidate;
         }
     }
-    PathBuf::from("python3")
+    // Windows installs expose `python`, not `python3`.
+    PathBuf::from(if cfg!(windows) { "python" } else { "python3" })
 }
 
 fn now_iso() -> String {

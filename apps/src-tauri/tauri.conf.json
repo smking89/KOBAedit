@@ -69,6 +69,11 @@
       "msi",
       "nsis"
     ],
+    "resources": {
+      "../../engine/koba_engine": "engine/koba_engine",
+      "../../engine/scripts": "engine/scripts",
+      "../../db/schema.sql": "db/schema.sql"
+    },
     "category": "DeveloperTool",
     "shortDescription": "Rust map, monument, skin and CUI studio",
     "longDescription": "Offline-first Rust map, monument, skin and CUI plugin studio with a guided wizard and full studio mode, built on Tauri, Three.js and WebGL2.",

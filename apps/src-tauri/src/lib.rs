@@ -59,24 +59,58 @@ fn splash_message() -> &'static std::sync::Mutex<String> {
     SPLASH_MESSAGE.get_or_init(|| std::sync::Mutex::new(String::new()))
 }
 
-fn project_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// Source checkout this binary was compiled from, when it still exists. Dev
+/// builds run from it; an installed copy built on CI does not have it.
+fn dev_checkout() -> Option<PathBuf> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+        .map(PathBuf::from)?;
+    (root.join("engine").join("koba_engine").is_dir() && root.join("db").join("schema.sql").is_file())
+        .then_some(root)
 }
 
-fn data_dir() -> PathBuf {
-    std::env::var("RUST_STUDIO_DATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| project_root().join("data"))
+/// Windows resource paths can carry a `\\?\` prefix that Python and SQLite
+/// do not always accept as a working directory or import path.
+fn plain_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(stripped) => PathBuf::from(stripped),
+        None => path,
+    }
 }
 
-fn engine_dir() -> PathBuf {
+/// Where the engine, schema and scripts live: the checkout in development,
+/// the bundled resources in an installed app.
+fn project_root(app: &tauri::App) -> PathBuf {
+    if let Some(root) = dev_checkout() {
+        return root;
+    }
+    app.path()
+        .resource_dir()
+        .map(plain_path)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Writable app data: `./data` in a checkout, the per-user app data folder
+/// when installed (the install directory is read-only).
+fn data_dir(app: &tauri::App) -> PathBuf {
+    if let Ok(value) = std::env::var("RUST_STUDIO_DATA") {
+        return PathBuf::from(value);
+    }
+    if let Some(root) = dev_checkout() {
+        return root.join("data");
+    }
+    app.path()
+        .app_data_dir()
+        .map(plain_path)
+        .unwrap_or_else(|_| PathBuf::from("data"))
+}
+
+fn engine_dir(root: &std::path::Path) -> PathBuf {
     std::env::var("RUST_STUDIO_ENGINE")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| project_root().join("engine"))
+        .unwrap_or_else(|_| root.join("engine"))
 }
 
 fn splash_progress(app: &tauri::AppHandle, percent: u8, message: &str, advance_hero: bool) {
@@ -210,25 +244,23 @@ fn startup(app: tauri::AppHandle) {
 }
 
 pub fn run() {
-    let root = project_root();
-    let data = data_dir();
-    let _ = std::fs::create_dir_all(&data);
-
-    let state = AppState {
-        data_dir: data.clone(),
-        db_path: data.join("rust-studio.db"),
-        engine_dir: engine_dir(),
-        project_root: root,
-        tasks: tasks::TaskManager::default(),
-        texture_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-        local_paths: std::sync::Mutex::new(None),
-    };
-
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
-        .manage(state)
         .setup(|app| {
+            // State is built here because the install paths need the app handle.
+            let root = project_root(app);
+            let data = data_dir(app);
+            let _ = std::fs::create_dir_all(&data);
+            app.manage(commands::AppState {
+                data_dir: data.clone(),
+                db_path: data.join("rust-studio.db"),
+                engine_dir: engine_dir(&root),
+                project_root: root,
+                tasks: tasks::TaskManager::default(),
+                texture_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+                local_paths: std::sync::Mutex::new(None),
+            });
             // Register kobastudios:// for this user. Bundled Linux packages also
             // ship the .desktop MimeType, but dev builds need this call.
             #[cfg(any(windows, target_os = "linux"))]
