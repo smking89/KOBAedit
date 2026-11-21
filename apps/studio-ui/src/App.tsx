@@ -50,6 +50,7 @@ import {
   localAssetStatus,
   saveAssetRoots,
   saveProject,
+  projectIdFromSavePath,
   scanLocalAssets,
   syncStatus,
   type LocalAssetStatus,
@@ -226,6 +227,7 @@ export default function App() {
     try {
       const loaded = await loadProject(project.id);
       if (!loaded.draft) throw new Error("Project has no saved draft state.");
+      savedProjectRef.current = { id: project.id, kind: (loaded.draft as WizardDraft).projectKind };
       dispatch({
         type: "applyGenerated",
         draft: loaded.draft as WizardDraft,
@@ -273,6 +275,10 @@ export default function App() {
           loadProject(action.slug)
             .then((loaded) => {
               if (!loaded.draft) throw new Error("Project has no saved draft state.");
+              savedProjectRef.current = {
+                id: action.slug,
+                kind: (loaded.draft as WizardDraft).projectKind,
+              };
               dispatch({
                 type: "applyGenerated",
                 draft: loaded.draft as WizardDraft,
@@ -844,10 +850,15 @@ export default function App() {
     dispatch({ type: "addPlacement", asset: prefab!, position: { x: hit.x, z: hit.z } });
   };
 
+  const savedProjectRef = useRef<{ id: string; kind: string } | null>(null);
   const onSave = async () => {
     setSaving(true);
     try {
-      await saveProject(draft, state.stepId);
+      const known = savedProjectRef.current;
+      const reuse = known && known.kind === draft.projectKind ? known.id : null;
+      const savedPath = await saveProject(draft, state.stepId, reuse);
+      const savedId = projectIdFromSavePath(savedPath);
+      savedProjectRef.current = savedId ? { id: savedId, kind: draft.projectKind } : null;
       dispatch({ type: "markSaved", at: new Date().toISOString() });
       void refreshProjectThumbnail(draft).catch(() => {
         // The cached GLB may not exist yet; saving must not fail because of art.

@@ -1962,8 +1962,14 @@ pub fn save_project(
     state: State<'_, AppState>,
     draft: Value,
     step_id: String,
+    project_id: Option<String>,
 ) -> Result<String, String> {
-    let project_id = uuid::Uuid::new_v4().to_string();
+    // Re-saving an open project must update it, not mint a new one each time.
+    // The id becomes a folder name, so only a well-formed UUID is accepted.
+    let project_id = project_id
+        .and_then(|value| uuid::Uuid::parse_str(value.trim()).ok())
+        .unwrap_or_else(uuid::Uuid::new_v4)
+        .to_string();
     let name = draft
         .get("name")
         .and_then(Value::as_str)

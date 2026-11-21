@@ -258,7 +258,7 @@ export function BaseItemStep() {
                   <button type="button" className="mesh-row-main" onClick={() => void selectGroup(group)}>
                     <img
                       className="mesh-row-thumb"
-                      src={thumbnails[stableKey] ?? "/favicon.svg"}
+                      src={thumbnails[stableKey] ?? "/branding/koba-studios-icon.png"}
                       alt=""
                       loading="lazy"
                     />

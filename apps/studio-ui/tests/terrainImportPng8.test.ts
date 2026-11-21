@@ -88,9 +88,9 @@ test("8-bit greyscale PNG import scales every sample to uint16", async () => {
     heights(imported),
     Array.from(samples, (value) => value * 257),
   );
-  // Heights are metres, derived from the scaled uint16 payload.
-  assert.equal(imported.minHeight, ((Math.min(...samples) * 257) / 65535) * 1000);
-  assert.equal(imported.maxHeight, ((Math.max(...samples) * 257) / 65535) * 1000);
+  // Heights are world metres (0 = -500 m), derived from the scaled uint16 payload.
+  assert.equal(imported.minHeight, ((Math.min(...samples) * 257) / 65535) * 1000 - 500);
+  assert.equal(imported.maxHeight, ((Math.max(...samples) * 257) / 65535) * 1000 - 500);
 });
 
 test("an 8-bit PNG reaches the same uint16 payload as the same 16-bit heights", async () => {

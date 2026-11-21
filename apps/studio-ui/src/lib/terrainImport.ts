@@ -7,8 +7,11 @@ import type { TerrainPreview } from "./procedural.ts";
 import { SPLAT_INDEX, TOPOLOGY_BITS } from "./procedural.ts";
 
 const HEIGHT_METRES = 1000;
-/** Rust's terrain layer spans -500..+500 m; the exporter clips to this range. */
-/** Rust's serialized height layer spans these world-space metres. */
+/**
+ * Rust's terrain layer spans -500..+500 m and a heightmap file stores that span
+ * as uint16 (0 = -500 m, 32768 = sea level, 65535 = +500 m), the same encoding
+ * the engine's sketch tool writes. The exporter clips to this range.
+ */
 export const HEIGHT_FLOOR = -500;
 export const HEIGHT_CEILING = 500;
 /** Native Rust map grids are 2049² or 4097²; keep them intact end to end. */
@@ -190,8 +193,8 @@ export async function readHeightmapFile(file: File): Promise<TerrainHeightImport
     resolution: width,
     encoding,
     data: bytesToBase64(uint16Bytes(values)),
-    minHeight: (minimum / 65535) * HEIGHT_METRES,
-    maxHeight: (maximum / 65535) * HEIGHT_METRES,
+    minHeight: rawToMetres(minimum),
+    maxHeight: rawToMetres(maximum),
     verticalScale: 1,
   };
 }
@@ -234,13 +237,17 @@ export async function readMaskFile(
   };
 }
 
+/** uint16 heightmap sample to world metres (0 = -500 m, 65535 = +500 m). */
+function rawToMetres(raw: number): number {
+  return (raw / 65535) * HEIGHT_METRES + HEIGHT_FLOOR;
+}
+
 export function decodeHeightmap(imported: TerrainHeightImport): Float32Array {
   const bytes = base64ToBytes(imported.data);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const values = new Float32Array(imported.resolution * imported.resolution);
   for (let index = 0; index < values.length; index += 1) {
-    const raw = view.getUint16(index * 2, true) / 65535;
-    values[index] = raw * HEIGHT_METRES * imported.verticalScale;
+    values[index] = rawToMetres(view.getUint16(index * 2, true)) * imported.verticalScale;
   }
   return values;
 }

@@ -443,7 +443,18 @@ export async function listDirectories(path?: string | null): Promise<DirectoryLi
   return invokeCommand<DirectoryListing>("list_directories", { path: path ?? null });
 }
 
-export async function saveProject(draft: WizardDraft, stepId: string): Promise<string> {
+/** Project id from the `projects/<id>/project.json` path `save_project` returns. */
+export function projectIdFromSavePath(savedPath: string): string | null {
+  const parts = savedPath.split(/[\\/]/);
+  const id = parts[parts.length - 2] ?? "";
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? id : null;
+}
+
+export async function saveProject(
+  draft: WizardDraft,
+  stepId: string,
+  projectId?: string | null,
+): Promise<string> {
   if (!isTauri()) {
     await wait(40);
     window.localStorage.setItem(
@@ -452,7 +463,7 @@ export async function saveProject(draft: WizardDraft, stepId: string): Promise<s
     );
     return "localStorage://rust-studio:last-project";
   }
-  return invokeCommand<string>("save_project", { draft, stepId });
+  return invokeCommand<string>("save_project", { draft, stepId, projectId: projectId ?? null });
 }
 
 export async function exportProject(draft: WizardDraft): Promise<ExportReport> {

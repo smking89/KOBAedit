@@ -99,15 +99,15 @@ def test_native_heightmap_keeps_1025_grid_and_map_size(tmp_path) -> None:
 
 
 # Preview heights for the fixture below, produced by the editor's own
-# buildTerrainPreview at 257² on a 4500 m draft (sampleGrid is bilinear). The
-# last pick sits above Rust's +500 m ceiling, so both sides store the clipped 500.
+# buildTerrainPreview at 257² on a 4500 m draft (sampleGrid is bilinear), with a
+# heightmap sample mapped as Rust stores it: 0 = -500 m, 65535 = +500 m.
 COARSE_PREVIEW_PICKS = [
-    (0, 0, 0.0),
-    (64, 32, 37.8729),
-    (128, 128, 242.4201),
-    (200, 96, 364.1108),
-    (256, 256, 500.0),
-    (37, 211, 339.498),
+    (0, 0, -500.0),
+    (64, 32, -462.1271),
+    (128, 128, -257.5799),
+    (200, 96, -135.8892),
+    (256, 256, 469.7108),
+    (37, 211, -160.502),
 ]
 
 
@@ -135,26 +135,26 @@ def sample_bilinear(raw: list[int], resolution: int, u: float, v: float) -> floa
 def test_stretch_grid_onto_map_interpolates_and_clips() -> None:
     """The exporter resample is plain bilinear on the source grid.
 
-    Raw values are elevation in the 0-1000 m import convention: 0, 500, 250 and
-    750 m here, so the last corner must be clipped at the layer ceiling exactly
-    as the preview clips it. This is the fast half of the old full-map test; one
-    end-to-end case still checks the export path itself.
+    Raw values use Rust's encoding (0 = -500 m, 32768 = sea level, 65535 =
+    +500 m): -500, 0, -250 and +250 m here. Scaling by 2 must clip at the layer
+    floor/ceiling exactly as the preview clips it. This is the fast half of the
+    old full-map test; one end-to-end case still checks the export path itself.
     """
     grid = [0, 32768, 16384, 49152]
     stretched = stretch_grid_onto_map(grid, 2, 3)
     metres = [height_raw_to_metres(value) for value in stretched]
 
     assert len(stretched) == 9
-    assert metres[0] == pytest.approx(0, abs=0.02)
-    assert metres[1] == pytest.approx(250, abs=0.02)  # edge midpoint
-    assert metres[2] == pytest.approx(500, abs=0.02)
-    assert metres[4] == pytest.approx(375, abs=0.02)  # centre = mean of corners
-    assert metres[6] == pytest.approx(250, abs=0.02)
-    assert metres[8] == pytest.approx(500, abs=0.02)  # 750 m clipped to the ceiling
+    assert metres[0] == pytest.approx(-500, abs=0.02)
+    assert metres[1] == pytest.approx(-250, abs=0.02)  # edge midpoint
+    assert metres[2] == pytest.approx(0, abs=0.02)  # raw 32768 is sea level
+    assert metres[4] == pytest.approx(-125, abs=0.02)  # centre = mean of corners
+    assert metres[6] == pytest.approx(-250, abs=0.02)
+    assert metres[8] == pytest.approx(250, abs=0.02)
 
     scaled = [height_raw_to_metres(value) for value in stretch_grid_onto_map(grid, 2, 3, 2.0)]
-    assert max(scaled) == pytest.approx(500, abs=0.02)
-    assert scaled[0] == pytest.approx(0, abs=0.02)
+    assert max(scaled) == pytest.approx(500, abs=0.02)  # 250 m x 2 reaches the ceiling
+    assert scaled[0] == pytest.approx(-500, abs=0.02)  # -1000 m clips at the floor
 
 
 def test_png_labelled_import_exports_identically_to_raw(tmp_path) -> None:

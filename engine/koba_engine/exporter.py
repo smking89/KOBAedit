@@ -444,7 +444,7 @@ def stretch_grid_onto_map(
     keeps its declared size and the grid is interpolated across it, exactly like
     the editor's ``applyHeightmapToPreview``/``sampleGrid``, so the preview the
     user paints against is the grid that gets exported. ``values`` are raw
-    uint16 (0-1000 m of elevation); the result is raw uint16 in Rust's
+    uint16 (0 = -500 m, 32768 = sea level, 65535 = +500 m); the result is raw uint16 in Rust's
     -500..+500 m height layer, which clips anything taller, as the preview does.
 
     Vectorised in row blocks: a 4097 squared import stretched onto a 16000 m map
@@ -469,8 +469,11 @@ def stretch_grid_onto_map(
         top = grid[rows, lower] * (1 - frac) + grid[rows, upper] * frac
         bottom = grid[next_rows, lower] * (1 - frac) + grid[next_rows, upper] * frac
         metres = (
-            top * (1 - frac[start:stop, None]) + bottom * frac[start:stop, None]
-        ) / 65535.0 * 1000.0 * scale
+            (top * (1 - frac[start:stop, None]) + bottom * frac[start:stop, None])
+            / 65535.0
+            * 1000.0
+            - 500.0
+        ) * scale
         native[start:stop] = height_metres_to_raw_array(metres)
     return native.reshape(-1)
 
@@ -522,9 +525,12 @@ def _apply_heightmap_import(document: WorldDocument, terrain: dict[str, Any]) ->
         # and the layer layout stay consistent.
         _resize_document_for_size(document, resolution - 1)
         native = height_metres_to_raw_array(
-            np.asarray(values[: resolution * resolution], dtype=np.float64)
-            / 65535.0
-            * 1000.0
+            (
+                np.asarray(values[: resolution * resolution], dtype=np.float64)
+                / 65535.0
+                * 1000.0
+                - 500.0
+            )
             * scale
         )
         encoded = encode_u16(native)
