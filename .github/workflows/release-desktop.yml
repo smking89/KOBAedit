@@ -1,17 +1,12 @@
 name: build-release
 
 # Builds every desktop bundle in the cloud: .AppImage/.deb/.rpm on Linux,
-# .msi/.exe on Windows, and (on demand) the tablet-only iPadOS app on macOS.
+# .msi/.exe on Windows. Desktop only.
 on:
   push:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      build_ios:
-        description: "Build the iPadOS bundle (needs Apple signing secrets)"
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -102,56 +97,6 @@ jobs:
           path: |
             apps/src-tauri/target/release/bundle/msi/*.msi
             apps/src-tauri/target/release/bundle/nsis/*.exe
-
-  ios:
-    name: iPadOS bundle (tablet only)
-    # iOS needs macOS and Apple signing, so it is opt-in from workflow_dispatch
-    # and never part of the tag release until the APPLE_* secrets exist.
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_ios }}
-    runs-on: macos-14
-    env:
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "apps/src-tauri -> target"
-          shared-key: ios-tablet
-
-      - run: npm ci
-      - run: npm run build
-
-      - name: Generate the Xcode project
-        working-directory: apps/src-tauri
-        run: npx tauri ios init --ci
-
-      - name: Restrict the app to iPadOS only
-        run: node scripts/ios-tablet-only.mjs
-
-      - name: Build the tablet app
-        working-directory: apps/src-tauri
-        run: npx tauri ios build --export-method app-store
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: koba-edit-ipados
-          if-no-files-found: warn
-          path: apps/src-tauri/gen/apple/build/**/*.ipa
 
   release:
     name: Draft release
