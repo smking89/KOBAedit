@@ -61,7 +61,7 @@ test("the localStorage fallback drops heightmaps and masks only", () => {
   assert.deepEqual(compact.draft.placements, state.draft.placements);
 });
 
-test("a quota failure retries with compact terrain and keeps the draft", () => {
+test("an oversized payload is written compactly without a doomed full write", () => {
   const store = new Map<string, string>();
   let attempts = 0;
   const localStorage = {
@@ -78,8 +78,7 @@ test("a quota failure retries with compact terrain and keeps the draft", () => {
     const state = stateWithTerrain(3_000_000, 2);
     const result = writeAutosave("test:key", state);
     assert.equal(result.ok, true);
-    assert.equal(result.partial, true);
-    // Oversized payloads skip the doomed full write and go compact directly.
+    assert.equal(result.omittedGrids, true);
     assert.equal(attempts, 1);
     const raw = store.get("test:key");
     assert.ok(raw);
@@ -105,7 +104,7 @@ test("small drafts are written in full", () => {
     const state = stateWithTerrain(64, 1);
     const result = writeAutosave("test:small", state);
     assert.equal(result.ok, true);
-    assert.equal(result.partial, false);
+    assert.equal(result.omittedGrids, false);
     const parsed = JSON.parse(store.get("test:small") ?? "{}") as WizardState;
     assert.ok(parsed.draft.terrain.heightmap?.data);
     assert.equal(parsed.draft.terrain.masks.length, 1);

@@ -47,8 +47,8 @@ export function stateForLocalStorage(state: WizardState): WizardState {
   };
 }
 
-/** True when the compact variant actually omitted something. */
-export function hasOmittedTerrain(state: WizardState): boolean {
+/** True when the draft carries grids that localStorage cannot hold. */
+function hasTerrainGrids(state: WizardState): boolean {
   return Boolean(state.draft.terrain.heightmap) || state.draft.terrain.masks.length > 0;
 }
 
@@ -70,8 +70,8 @@ function terrainPayloadChars(state: WizardState): number {
 export interface AutosaveWriteResult {
   /** The draft reached localStorage. */
   ok: boolean;
-  /** Grids were left out of this write (they live in IndexedDB). */
-  partial: boolean;
+  /** Terrain grids were too large for localStorage and left out. */
+  omittedGrids: boolean;
 }
 
 /**
@@ -82,25 +82,25 @@ export interface AutosaveWriteResult {
  */
 export function writeAutosave(key: string, state: WizardState): AutosaveWriteResult {
   const compact = stateForLocalStorage(state);
-  const omitted = hasOmittedTerrain(state);
+  const omittedGrids = hasTerrainGrids(state);
   if (terrainPayloadChars(state) > AUTOSAVE_PAYLOAD_CHARS) {
     try {
       window.localStorage.setItem(key, JSON.stringify(compact));
-      return { ok: true, partial: true };
+      return { ok: true, omittedGrids };
     } catch {
-      return { ok: false, partial: true };
+      return { ok: false, omittedGrids };
     }
   }
   try {
     window.localStorage.setItem(key, JSON.stringify(stateForStorage(state)));
-    return { ok: true, partial: false };
+    return { ok: true, omittedGrids: false };
   } catch {
     try {
       window.localStorage.setItem(key, JSON.stringify(compact));
-      return { ok: true, partial: omitted };
+      return { ok: true, omittedGrids };
     } catch {
       // Even the compact draft cannot fit; editing continues in memory.
-      return { ok: false, partial: omitted };
+      return { ok: false, omittedGrids };
     }
   }
 }

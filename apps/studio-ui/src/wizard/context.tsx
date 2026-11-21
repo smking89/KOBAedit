@@ -11,6 +11,7 @@ import {
 } from "react";
 
 import { activeLayer, clampOpacity, migrateLayers } from "../lib/layers";
+import { isTauri } from "../lib/ipc";
 import { mergeSeedPlacements, syncSharedPlacements } from "../lib/workspaceSync";
 import {
   branchFor,
@@ -38,7 +39,7 @@ const STORAGE_KEY = "rust-studio:wizard:v1";
 const WORKSPACES_KEY = "rust-studio:wizard:workspaces:v1";
 
 /** The native shell persists grids in SQLite/project.json, not IndexedDB. */
-const DESKTOP_SHELL = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const DESKTOP_SHELL = isTauri();
 
 function loadWorkspaces(): Partial<Record<ProjectKind, WizardState>> {
   if (typeof window === "undefined") return {};
@@ -51,7 +52,7 @@ function loadWorkspaces(): Partial<Record<ProjectKind, WizardState>> {
 }
 
 function saveWorkspaces(workspaces: Partial<Record<ProjectKind, WizardState>>): void {
-  // Grids live in IndexedDB, so the local copy stays small and always fits.
+  // Grids live in IndexedDB or the native project, so the local copy stays small.
   const stored: Partial<Record<ProjectKind, WizardState>> = {};
   for (const [kind, workspace] of Object.entries(workspaces)) {
     if (workspace) stored[kind as ProjectKind] = stateForLocalStorage(workspace);
@@ -420,14 +421,10 @@ export function WizardProvider({ children }: { children: ReactNode }) {
   // Restore imported grids before the first autosave can replace them. A draft
   // loaded from the native shell already carries its grids inline.
   useEffect(() => {
+    // Desktop projects keep grids in their native state; never read IndexedDB.
+    if (DESKTOP_SHELL) return;
     const projectId = state.draft.projectId;
-    // Desktop projects carry grids in their native state; never let a browser
-    // IndexedDB copy shadow it.
-    if (
-      DESKTOP_SHELL ||
-      state.draft.terrain.heightmap ||
-      state.draft.terrain.masks.length > 0
-    ) {
+    if (state.draft.terrain.heightmap || state.draft.terrain.masks.length > 0) {
       setGridReadyFor(projectId);
       return;
     }
@@ -472,17 +469,13 @@ export function WizardProvider({ children }: { children: ReactNode }) {
         const terrain = state.draft.terrain;
         const hasGrids = Boolean(terrain.heightmap) || terrain.masks.length > 0;
         let gridsStored = true;
-        const signature = savedGrids.current;
+        const signature =
+          savedGrids.current?.projectId === projectId ? savedGrids.current : null;
         const gridsChanged =
           !signature ||
-          signature.projectId !== projectId ||
           signature.heightmap !== terrain.heightmap ||
           signature.masks !== terrain.masks;
-        const hadSavedGrids = Boolean(
-          signature &&
-            signature.projectId === projectId &&
-            (signature.heightmap || signature.masks.length > 0),
-        );
+        const hadSavedGrids = Boolean(signature?.heightmap || signature?.masks.length);
         // Only touch IndexedDB when there is something to store or a previous
         // record to clear; an empty project must not report a grid failure.
         if (
@@ -502,9 +495,12 @@ export function WizardProvider({ children }: { children: ReactNode }) {
             };
           }
         }
-        const local = writeAutosave(STORAGE_KEY, stateForLocalStorage(state));
+        const local = writeAutosave(STORAGE_KEY, state);
         if (disposed) return;
-        const phase = !local.ok ? "error" : gridsStored ? "saved" : "partial";
+        // Desktop drafts have only localStorage, so an omitted grid is a
+        // partial save there; browser grids are covered by IndexedDB above.
+        const gridsDurable = DESKTOP_SHELL ? !local.omittedGrids : gridsStored;
+        const phase = !local.ok ? "error" : gridsDurable ? "saved" : "partial";
         setAutosave((current) => ({
           phase,
           savedAt: local.ok ? new Date().toISOString() : current.savedAt,
