@@ -1,4 +1,5 @@
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -2617,15 +2618,17 @@ pub fn sync_configure(
         if let Some(parent) = token_file.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        // Owner-only token file on Unix; Windows keeps it in the user profile ACL.
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options
             .open(&token_file)
             .map_err(|error| error.to_string())?;
         file.write_all(secret.as_bytes())
             .map_err(|error| error.to_string())?;
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(
             &token_file,
             std::fs::Permissions::from_mode(0o600),
