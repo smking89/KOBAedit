@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from rust_studio_engine.indexer.prefab_bounds import (
+from koba_engine.indexer.prefab_bounds import (
     PrefabBounds,
     extract_item_prefab_bounds_from_links,
     extract_prefab_bounds,
     item_prefab_candidates,
 )
-from rust_studio_engine.indexer.unity_bundle import ContainerEntry
+from koba_engine.indexer.unity_bundle import ContainerEntry
 
 
 class Vec:

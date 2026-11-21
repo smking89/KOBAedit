@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from rust_studio_engine.indexer import prefab_glb as pg
+from koba_engine.indexer import prefab_glb as pg
 
 
 def test_env_cache_evicts_oldest_entry_when_budget_is_exceeded(

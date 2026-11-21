@@ -1,7 +1,7 @@
 //! Native Rust reader/writer for Rust's `WorldSerialization` container.
 //!
 //! This crate is the Tauri shell's fast path for inspecting and writing `.map`
-//! and `.prefab` files. It mirrors `engine/rust_studio_engine/world` so both the
+//! and `.prefab` files. It mirrors `engine/koba_engine/world` so both the
 //! Rust shell and the Python sidecar can open the same files.
 
 pub mod error;

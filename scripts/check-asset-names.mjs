@@ -7,9 +7,9 @@
 import { readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
-// `apps/desktop/src-tauri/icons` is exempt: MSIX requires the generated
+// `apps/src-tauri/icons` is exempt: MSIX requires the generated
 // Square150x150Logo.png / StoreLogo.png casing verbatim.
-const roots = ["apps/desktop/ui/public", "engine"];
+const roots = ["apps/studio-ui/public", "engine"];
 const ignored = new Set(["__pycache__", "node_modules", ".pytest_cache", ".ruff_cache"]);
 const offenders = [];
 

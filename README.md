@@ -1,4 +1,4 @@
-# Rust Studio
+# KOBA Studios
 
 Linux-first desktop workspace for **Rust map and monument editing** and **Rust PC item skin creation**. It is offline-first: every project saves to local SQLite and disk, and optional sync queues changes until a connection is available.
 
@@ -15,10 +15,10 @@ Guided wizard (React)  ->  Tauri commands (Rust)  ->  SQLite index + project sto
 
 | Path | Purpose |
 | --- | --- |
-| `apps/desktop/ui` | React + TypeScript wizard, Three.js viewports, GLSL terrain and skin shaders |
-| `apps/desktop/src-tauri` | Tauri v2 shell, IPC commands, AppImage/deb packaging config |
+| `apps/studio-ui` | React + TypeScript wizard, Three.js viewports, GLSL terrain and skin shaders |
+| `apps/src-tauri` | Tauri v2 shell, IPC commands, AppImage/deb packaging config |
 | `crates/world-codec` | Native Rust WorldSerialization (`.map` / `.prefab`) reader/writer |
-| `engine/rust_studio_engine` | Python codec, terrain/brush math, spline extrusion, textures, SQLite indexer, sync outbox, exporter |
+| `engine/koba_engine` | Python codec, terrain/brush math, spline extrusion, textures, SQLite indexer, sync outbox, exporter |
 | `engine/scripts/ingest_assets.py` | Batch ingestion for loose meshes, prefabs and maps |
 | `engine/scripts/ingest_bundles.py` | UnityFS bundle inventory, prefab import and mesh/texture export |
 | `db/schema.sql` | Complete local index, project and sync schema |
@@ -44,7 +44,7 @@ The browser build uses a local mock bridge, so the whole wizard, terrain shader,
 
 ```bash
 npm run tauri:dev     # dev shell, Vite dev server, native filesystem + SQLite
-npm run tauri:build   # AppImage and .deb under apps/desktop/src-tauri/target/release/bundle
+npm run tauri:build   # AppImage and .deb under apps/src-tauri/target/release/bundle
 ```
 
 The shell resolves the repository root from its manifest path for development. Override with `RUST_STUDIO_DATA`, `RUST_STUDIO_ENGINE` and `RUST_STUDIO_PYTHON` when packaging or running from elsewhere.
@@ -105,7 +105,7 @@ Every `.prefab` listed by the bundle's `GameManifest` is imported as well (marke
 Monument cards show a real preview without any scene geometry. `monuments.bundle` ships a terrain height map per monument (`assets/scenes/prefabs/<group>/<scene>/heighttexture.png`); the engine renders it as shaded relief into the app's thumbnail cache, keyed by the same prefab hash the drawer asks for:
 
 ```bash
-.venv/bin/python -m rust_studio_engine monument-previews \
+.venv/bin/python -m koba_engine monument-previews \
   --bundle-root ~/Desktop --cache-dir ~/.cache/koba-edit/thumbs
 ```
 
@@ -119,7 +119,7 @@ Export selected payloads on demand (OBJ meshes and PNG textures):
 
 ```bash
 # One prefab as a cached GLB, through the resident extraction worker
-.venv/bin/python -m rust_studio_engine export-prefab-glb \
+.venv/bin/python -m koba_engine export-prefab-glb \
   --prefab assets/prefabs/weapons/ak47u/ak47u.item.prefab \
   --bundle-root ~/Desktop --cache-dir ~/.cache/koba-edit/meshes \
   --daemon-socket ~/.cache/koba-edit/extract.sock
@@ -145,10 +145,10 @@ Exports go to `data/extracted/<bundle>/` unless `--extract-dir` is set. `--limit
 ## Inspect and export from the CLI
 
 ```bash
-.venv/bin/python -m rust_studio_engine inspect-map world.map --json
-.venv/bin/python -m rust_studio_engine export-project draft.json --out data/exports --json
-.venv/bin/python -m rust_studio_engine db-stats --db data/rust-studio.db
-.venv/bin/python -m rust_studio_engine generate-terrain --seed 1337 --preset islands --out terrain.png
+.venv/bin/python -m koba_engine inspect-map world.map --json
+.venv/bin/python -m koba_engine export-project draft.json --out data/exports --json
+.venv/bin/python -m koba_engine db-stats --db data/rust-studio.db
+.venv/bin/python -m koba_engine generate-terrain --seed 1337 --preset islands --out terrain.png
 ```
 
 `draft.json` is the wizard state (or `{ "draft": ... }` as saved by the shell). The exporter emits a server-ready `.map`, a `.prefab` for monument projects, or the four Workshop PNGs for skins.
@@ -165,7 +165,8 @@ The Python suite covers the LZ4 legacy stream, protobuf round trips, terrain bru
 
 ## Offline and online behavior
 
-- A banner is never required: projects autosave to `localStorage` in the browser build and to `data/projects/<id>/project.json` plus SQLite in the shell.
+- A banner is never required: drafts autosave to `localStorage` in the browser build and to `data/projects/<id>/project.json` plus SQLite in the shell. The top bar shows **Saving draft**, the last **Autosaved** time, **Draft saved, grids not stored** if IndexedDB rejects a grid write, or **Autosave failed**.
+- In the browser build, imported heightmaps and mask sets are stored in IndexedDB keyed by project and restored on reload, so the draft copy stays small enough for the localStorage quota; the desktop shell skips IndexedDB and keeps grids in SQLite/project.json. The CUI frame remains deliberately excluded from every saved draft; native SQLite/project.json saves still carry the grids inline.
 - `Online sync` only changes *when* uploads happen. Each save bumps a local revision and enqueues a push in `sync_queue`; failures back off exponentially instead of blocking edits.
 - Pulls compare remote revisions before writing. A dirty local revision plus a newer remote revision marks the entity `conflict`; the Export step shows **Keep local and push** / **Accept remote** instead of silently overwriting. Revisions are compared deterministically; there is no hidden field-level merge.
 - Sync tokens are not stored in SQLite or project JSON. `sync_configure` writes the token to `data/sync/token` with mode `0600`; `sync_profiles.token_ref` records that path, and the shell passes it to the HTTP client by file.
@@ -183,7 +184,11 @@ The Python suite covers the LZ4 legacy stream, protobuf round trips, terrain bru
 
 ## Terrain, cache and native jobs
 
-- Heightmap and mask imports keep native 2049² / 4097² grids. Files above 4097² are rejected rather than silently downsampled. A native heightmap sets the exported map size to `resolution - 1` metres so layer sizes validate; the UI shows the layer's memory footprint and the exporter enforces a 512 MiB layer budget. Masks whose grid already matches the target layer are copied byte for byte; when the native grid is larger, the exporter box-averages it onto the splat/biome/topology grid instead of point-sampling, so 4097² coverage is not lost to aliasing.
+- Map sizes are free-form from 1000 m up to 16000 m. Terrain generation and the mask/topology passes run on numpy, so a 16000 m export completes in about 90 s and needs roughly 2.5 GiB of layer memory plus the compressed `.map` on disk.
+- Sculpt brushes are raise, lower, smooth, flatten and erode. Erode is thermal: a held stroke pulls each texel toward its lowest neighbour, cutting gullies instead of averaging the surface like smooth.
+- Map notes pin checklist items to world coordinates and save with the project state; the 3D viewport draws them as pins (amber open, green done). **Bird's-Eye** renders an orthographic top-down PNG at 2048 px and keeps the recent captures in a gallery for download. Snapshots are saved per project under `data/snapshots/`; the browser build stores them in IndexedDB.
+- **Marketplace** opens the koba.games drawer scoped to the active project: maps see maps, monuments, prefabs and plugins; monument projects see monuments, prefabs and plugins; skins see skins. The bundled catalogue and the installed library work offline; installed ids are kept locally. `kobastudios://install/<asset-id>`, `kobastudios://open-project/<slug>` and `kobastudios://auth/callback?token=...` are registered through `tauri-plugin-deep-link`. Warm links route into the running window; launch links are parked until the workspace listens, so cold starts resolve too. An install link always shows its linked asset, even when that kind is outside the active project's scope.
+- Heightmap and mask imports keep native 2049² / 4097² grids. Files above 4097² are rejected rather than silently downsampled. A native heightmap sets the exported map size to `resolution - 1` metres so layer sizes validate; a coarser import is bilinearly stretched onto the declared map, so a 16000 m world still accepts a 4097² heightmap. The UI shows the layer's memory footprint; the exporter's layer budget scales with the map being written and `KOBA_EXPORT_LAYER_MB` overrides it. Masks whose grid already matches the target layer are copied byte for byte; when the native grid is larger, the exporter box-averages it onto the splat/biome/topology grid instead of point-sampling, so 4097² coverage is not lost to aliasing.
 - Bundle scans and prefab GLB extraction run as cancellable background jobs. Python writes JSON-lines progress to `data/sync/progress/`; the shell polls it and the UI shows the current stage with a Cancel button. Killing a job leaves SQLite to roll back its open transaction.
 - `~/.cache/koba-edit/{meshes,thumbs}` can be inspected and pruned from the New Project screen. Pruning removes the oldest `.glb`/`.png`/`.obj` files first and preserves unrelated files. The chosen limit is saved in `data/cache-settings.json` and enforced after GLB/thumbnail writes and completed scan/extraction jobs, so it survives restarts. The default is 512 MiB; `KOBA_CACHE_LIMIT_MB` supplies the initial value until a limit is saved.
 - **Browse...** in the Local index panel opens the native Zenity folder picker; the manual path field remains available for headless sessions.

@@ -7,33 +7,34 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from rust_studio_engine.indexer.db import connect
-from rust_studio_engine.indexer.indexer import AssetIndexer, prefab_id_from_path
-from rust_studio_engine.procedural import TerrainSettings, generate_terrain
-from rust_studio_engine.spline import (
+from koba_engine.indexer.db import connect
+from koba_engine.indexer.indexer import AssetIndexer, prefab_id_from_path
+from koba_engine.procedural import TerrainSettings, generate_terrain
+from koba_engine.spline import (
     sample_catmull_rom,
     smooth_path,
     terrain_hugging_ribbon,
 )
-from rust_studio_engine.sync.queue import SyncQueue
-from rust_studio_engine.texture import (
+from koba_engine.sync.queue import SyncQueue
+from koba_engine.texture import (
     TextureError,
     export_channels,
     normal_map_from_height,
     validate_resolution,
 )
-from rust_studio_engine.world.map_file import build_document
-from rust_studio_engine.world.models import (
+from koba_engine.world.map_file import build_document
+from koba_engine.world.models import (
     PathInstance,
     PathNode,
     PrefabInstance,
     Vector3,
     WorldDocument,
 )
-from rust_studio_engine.world.terrain import (
+from koba_engine.world.terrain import (
     EDITOR_TOPOLOGY_FLAGS,
     HeightField,
     decode_i32,
+    height_raw_to_metres,
     encode_i32,
     encode_u16,
     mark_topology_region,
@@ -77,6 +78,25 @@ def test_heightfield_brush_and_monument_flatten() -> None:
     assert field.sample(0, 0) == pytest.approx(target, abs=0.2)
     field.store(document)
     assert len(document.layers["terrain"]) == res * res * 2
+
+
+def test_erode_brush_cuts_a_peak_towards_its_neighbours() -> None:
+    res = 65
+    size = 64
+    heights = [32000] * (res * res)
+    centre = (res // 2) * res + res // 2
+    heights[centre] = 42000  # a single sharp spike
+    document = WorldDocument(size=size, layers={"terrain": encode_u16(heights)})
+    field = HeightField.from_document(document)
+
+    before = field.sample(0, 0)
+    touched = field.apply_brush(0, 0, radius=8, strength=1.0, mode="erode")
+    assert touched > 0
+    assert field.sample(0, 0) < before - 5.0
+    # A texel outside the brush keeps its original height.
+    assert field.sample(-size / 2 + 2, -size / 2 + 2) == pytest.approx(
+        height_raw_to_metres(32000), abs=0.01
+    )
 
 
 def test_splat_paint_normalizes_and_topology_flags() -> None:
@@ -286,7 +306,7 @@ def test_sync_queue_backoff_and_conflict(tmp_path) -> None:
 
 
 def test_schema_and_settings(tmp_path) -> None:
-    from rust_studio_engine.indexer.db import get_setting, set_setting
+    from koba_engine.indexer.db import get_setting, set_setting
 
     connection = connect(tmp_path / "settings.db")
     set_setting(connection, "theme", "dark")

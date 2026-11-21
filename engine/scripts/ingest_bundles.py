@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rust_studio_engine.cli import main  # noqa: E402
+from koba_engine.cli import main  # noqa: E402
 
 
 if __name__ == "__main__":

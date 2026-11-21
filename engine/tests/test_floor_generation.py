@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from rust_studio_engine.procedural import (
+from koba_engine.procedural import (
     TerrainSettings,
     generate_terrain,
 )
-from rust_studio_engine.world.terrain import decode_u16
+from koba_engine.world.terrain import decode_u16
 
 
 def test_floor_height_replaces_the_heightmap() -> None:

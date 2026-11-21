@@ -1,5 +1,5 @@
 -- Rust Studio local index and project store
--- SQLite 3.35+ (JSON1 + FTS5). Applied by engine/rust_studio_engine/indexer/db.py
+-- SQLite 3.35+ (JSON1 + FTS5). Applied by engine/koba_engine/indexer/db.py
 -- (PRAGMA user_version is managed by the migrations in that module; this file is
 -- the canonical v1 shape and is safe to re-apply because every object is IF NOT EXISTS).
 

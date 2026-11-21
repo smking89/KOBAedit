@@ -7,17 +7,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from rust_studio_engine.indexer import bundles as bundle_module
-from rust_studio_engine.indexer.bundles import BundleIngestor, classify_asset_path, classify_object
-from rust_studio_engine.indexer.bundles import _is_skin_mesh
-from rust_studio_engine.indexer.db import connect, database_stats
-from rust_studio_engine.indexer.indexer import prefab_name_from_path
-from rust_studio_engine.indexer.unity_bundle import (
+from koba_engine.indexer import bundles as bundle_module
+from koba_engine.indexer.bundles import BundleIngestor, classify_asset_path, classify_object
+from koba_engine.indexer.bundles import _is_skin_mesh
+from koba_engine.indexer.db import connect, database_stats
+from koba_engine.indexer.indexer import prefab_name_from_path
+from koba_engine.indexer.unity_bundle import (
     BundleFormatError,
     ContainerEntry,
     read_bundle_info,
 )
-from rust_studio_engine.world.lz4_legacy import compress_block
+from koba_engine.world.lz4_legacy import compress_block
 
 
 def build_unityfs(*, compressed: bool, padded: bool) -> bytes:
@@ -122,7 +122,7 @@ class FakeEnvironment:
 
 
 def test_manifest_prefabs_are_indexed_with_monument_category(tmp_path) -> None:
-    from rust_studio_engine.indexer.indexer import AssetIndexer
+    from koba_engine.indexer.indexer import AssetIndexer
 
     indexer = AssetIndexer(tmp_path / "index.db")
     try:

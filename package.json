@@ -1,19 +1,21 @@
 {
-  "name": "rust-studio",
+  "name": "koba-studios",
   "private": true,
-  "version": "0.1.0",
-  "description": "Unified Rust map, monument and PC skin studio (Tauri + React + Three.js + Rust/Python engine).",
+  "version": "1.6.0",
+  "description": "KOBA Studios: unified Rust map, monument, skin and CUI plugin studio (Tauri + React + Three.js + Rust/Python engine).",
   "workspaces": [
-    "apps/desktop/ui",
-    "apps/desktop"
+    "apps/studio-ui",
+    "apps/src-tauri"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace @rust-studio/ui",
-    "build": "npm run build --workspace @rust-studio/ui",
-    "typecheck": "npm run typecheck --workspace @rust-studio/ui",
-    "tauri": "npm --prefix apps/desktop run tauri",
-    "tauri:dev": "npm --prefix apps/desktop run tauri -- dev",
-    "tauri:build": "npm --prefix apps/desktop run tauri -- build",
+    "dev": "npm run dev --workspace @koba/studio-ui",
+    "build": "npm run build --workspace @koba/studio-ui",
+    "typecheck": "npm run typecheck --workspace @koba/studio-ui",
+    "tauri": "npm --prefix apps/src-tauri run tauri",
+    "tauri:dev": "npm --prefix apps/src-tauri run tauri -- dev",
+    "tauri:dev:gpu": "env -u WEBKIT_DISABLE_COMPOSITING_MODE LIBGL_ALWAYS_SOFTWARE=0 npm --prefix apps/src-tauri run tauri -- dev",
+    "tauri:dev:compat": "WEBKIT_DISABLE_COMPOSITING_MODE=1 npm --prefix apps/src-tauri run tauri -- dev",
+    "tauri:build": "npm --prefix apps/src-tauri run tauri -- build",
     "check:assets": "node scripts/check-asset-names.mjs",
     "ios:tablet": "node scripts/ios-tablet-only.mjs",
     "index:assets": "bash scripts/index-kobaedit-assets.sh",

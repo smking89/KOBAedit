@@ -5,14 +5,14 @@ import struct
 
 import pytest
 
-from rust_studio_engine.world.lz4_legacy import (
+from koba_engine.world.lz4_legacy import (
     Lz4Error,
     compress_block,
     compress_stream,
     decompress_block,
     decompress_stream,
 )
-from rust_studio_engine.world.map_file import (
+from koba_engine.world.map_file import (
     MapFormatError,
     build_document,
     expected_layer_sizes,
@@ -21,14 +21,14 @@ from rust_studio_engine.world.map_file import (
     validate_layout,
     write_document,
 )
-from rust_studio_engine.world.models import (
+from koba_engine.world.models import (
     PathInstance,
     PathNode,
     PrefabInstance,
     Vector3,
     WorldDocument,
 )
-from rust_studio_engine.world.terrain import encode_i32, encode_u16
+from koba_engine.world.terrain import encode_i32, encode_u16
 
 
 def make_document(size: int = 64) -> WorldDocument:

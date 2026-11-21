@@ -3,7 +3,7 @@ import struct
 
 from PIL import Image
 
-from rust_studio_engine.indexer import prefab_glb
+from koba_engine.indexer import prefab_glb
 
 
 class FakeMesh:

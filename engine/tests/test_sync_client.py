@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from rust_studio_engine.sync.client import (
+from koba_engine.sync.client import (
     RevisionConflict,
     SyncHttpClient,
     SyncHttpError,
@@ -100,7 +100,7 @@ def test_health_push_pull_and_conflict(server):
 
 
 def test_cli_push_and_pull(server, tmp_path, capsys):
-    from rust_studio_engine.cli import main
+    from koba_engine.cli import main
 
     token = tmp_path / "token"
     token.write_text("secret-token", encoding="utf-8")

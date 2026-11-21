@@ -1,0 +1,10 @@
+{
+  "name": "@koba/tauri-shell",
+  "private": true,
+  "version": "1.6.0",
+  "scripts": {
+    "dev": "npm --prefix ../studio-ui run dev",
+    "build": "npm --prefix ../studio-ui run build",
+    "tauri": "tauri"
+  }
+}

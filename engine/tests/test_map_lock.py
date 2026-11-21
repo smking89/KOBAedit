@@ -1,6 +1,6 @@
 import pytest
 
-from rust_studio_engine.map_lock import (
+from koba_engine.map_lock import (
     LOCK_FORMAT,
     LOCK_LAYER,
     create_map_lock,

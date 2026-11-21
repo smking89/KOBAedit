@@ -1,0 +1,235 @@
+"""Server Ready-Pack export.
+
+A map is only half of a wipe. This module writes the rest of what a fresh Rust
+server needs so the owner can upload one archive:
+
+* ``server.cfg`` - hostname, world size, seed, save interval;
+* ``oxide/config/BetterLoot.json`` and ``oxide/config/AlphaLoot.json`` - loot
+  tables matching the project's loot settings;
+* ``oxide/data/BotReSpawn/<monument>.json`` - one spawn profile per tier 3
+  monument;
+* ``oxide/plugins/Koba<Project>.cs`` - the companion plugin;
+* ``manifest.json`` - what was written and with which settings.
+
+Plugin schemas move between versions, so every generated config carries a
+``_generated`` block naming the studio and version that wrote it. Server owners
+can diff it after a plugin update instead of guessing what changed.
+"""
+
+from __future__ import annotations
+
+import json
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .plugins import build_spec, render_plugin
+
+BUNDLE_NAME = "server-bundle.zip"
+
+
+def _tool_version() -> str:
+    return "1.2.0"
+
+
+def _slug(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in value.strip())
+    cleaned = "-".join(part for part in cleaned.split("-") if part)
+    return cleaned.lower() or "map"
+
+
+def _number(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _better_loot(draft: dict[str, Any], generated: str) -> dict[str, Any]:
+    loot = draft.get("loot") or {}
+    density = max(0.1, _number(loot.get("lootDensity"), 1.0))
+    tier = int(_number(loot.get("tier"), 2))
+    return {
+        "_generated": {
+            "tool": "KOBA Studios",
+            "version": _tool_version(),
+            "at": generated,
+            "note": "Verify keys against the installed BetterLoot version before a wipe.",
+        },
+        "Generic": {
+            "scrapAmountMultiplier": round(density, 3),
+            "lootMultiplier": round(1.0 + (tier - 2) * 0.15, 3),
+            "maxItemsPerCrate": 8,
+            "minItemsPerCrate": 2,
+        },
+        "Loot": {
+            "crateTickRate": 300,
+            "adjustedLootTables": ["crate_normal", "crate_elite", "crate_basic"],
+            "includeFlares": True,
+            "includeSigns": False,
+        },
+        "FancyDrop": {"dropCount": 2, "dropRadius": 120.0},
+    }
+
+
+def _alpha_loot(draft: dict[str, Any], generated: str) -> dict[str, Any]:
+    loot = draft.get("loot") or {}
+    tier = int(_number(loot.get("tier"), 2))
+    density = max(0.1, _number(loot.get("lootDensity"), 1.0))
+    return {
+        "_generated": {
+            "tool": "KOBA Studios",
+            "version": _tool_version(),
+            "at": generated,
+            "note": "AlphaLoot profile generated from the project loot settings.",
+        },
+        "ConfigVersion": 1,
+        "Global": {
+            "LootMultiplier": round(density, 3),
+            "MaxTier": tier,
+            "MinTier": max(1, tier - 1),
+        },
+        "Profiles": {
+            "main": {
+                "Enabled": True,
+                "ContainerMultiplier": round(density, 3),
+                "ScrapMultiplier": 1.0,
+                "AllowDuplicates": False,
+            }
+        },
+    }
+
+
+def _bot_respawn_profile(monument: dict[str, Any], generated: str) -> dict[str, Any]:
+    tier = int(_number(monument.get("lootTier"), 1))
+    return {
+        "_generated": {
+            "tool": "KOBA Studios",
+            "version": _tool_version(),
+            "at": generated,
+            "note": "BotReSpawn profile template; confirm the schema for your plugin build.",
+        },
+        "Allow_None_Spawn": False,
+        "Max_At_One_Time": 1 + max(0, tier - 1),
+        "Respawn_Rate_Min": 900,
+        "Respawn_Rate_Max": 1800,
+        "Radius": 24,
+        "Spawn_Points": [
+            {
+                "x": round(_number((monument.get("position") or {}).get("x"), 0.0), 2),
+                "y": round(_number((monument.get("position") or {}).get("y"), 0.0), 2),
+                "z": round(_number((monument.get("position") or {}).get("z"), 0.0), 2),
+            }
+        ],
+    }
+
+
+def _max_players(draft: dict[str, Any]) -> int:
+    """Slot count from the loot step, with older drafts falling back to 150."""
+
+    loot = draft.get("loot") or {}
+    value = loot.get("maxPlayers", draft.get("maxPlayers"))
+    return int(max(25, min(300, _number(value, 150.0))))
+
+
+def _server_cfg(draft: dict[str, Any]) -> str:
+    terrain = draft.get("terrain") or {}
+    name = str(draft.get("name") or "KOBA Map")
+    max_players = _max_players(draft)
+    rows = [
+        "# Generated by KOBA Studios - paste into the server's server.cfg",
+        f'server.hostname "{name}"',
+        f'server.description "{name} - built with KOBA Studios"',
+        f"server.seed {int(_number(terrain.get('seed'), 1337))}",
+        f"server.worldsize {int(_number(terrain.get('sizeMetres', terrain.get('size_metres')), 4000))}",
+        f"server.maxplayers {max_players}",
+        "server.saveinterval 300",
+        "server.tickrate 30",
+        "server.stability false",
+        "server.tags wipe,monthly,koba",
+        "fps.limit -1",
+    ]
+    return "\n".join(rows) + "\n"
+
+
+def build_bundle(
+    draft: dict[str, Any],
+    out_dir: str | Path,
+    *,
+    zip_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Write the ready-pack tree and archive it; returns a JSON-safe summary."""
+
+    if not isinstance(draft, dict):
+        raise TypeError("draft must be an object")
+
+    directory = Path(out_dir)
+    root = directory / "server-bundle"
+    root.mkdir(parents=True, exist_ok=True)
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    spec = build_spec(draft)
+    plugin_path = root / "oxide" / "plugins" / f"{spec.class_name}.cs"
+    plugin_path.parent.mkdir(parents=True, exist_ok=True)
+    plugin_path.write_text(render_plugin(spec, "oxide"), encoding="utf-8")
+
+    _write_json(root / "oxide" / "config" / "BetterLoot.json", _better_loot(draft, generated))
+    _write_json(root / "oxide" / "config" / "AlphaLoot.json", _alpha_loot(draft, generated))
+    (root / "server.cfg").write_text(_server_cfg(draft), encoding="utf-8")
+
+    placements = [item for item in (draft.get("placements") or []) if isinstance(item, dict)]
+    profiles = [item for item in placements if int(_number(item.get("lootTier"), 1)) >= 3][:8]
+    for monument in profiles:
+        name = _slug(str(monument.get("name") or "monument"))
+        _write_json(
+            root / "oxide" / "data" / "BotReSpawn" / f"{name}.json",
+            _bot_respawn_profile(monument, generated),
+        )
+
+    files = sorted(str(path.relative_to(root)) for path in root.rglob("*") if path.is_file())
+    manifest = {
+        "tool": "KOBA Studios",
+        "version": _tool_version(),
+        "generatedAt": generated,
+        "project": str(draft.get("name") or "Untitled"),
+        "mapSize": int(_number(
+            (draft.get("terrain") or {}).get("sizeMetres",
+                (draft.get("terrain") or {}).get("size_metres")), 4000)
+        ),
+        "botProfiles": len(profiles),
+        "files": files,
+    }
+    _write_json(root / "manifest.json", manifest)
+
+    archive = Path(zip_path) if zip_path else directory / BUNDLE_NAME
+    if archive.suffix != ".zip":
+        archive = archive.with_suffix(".zip")
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        for relative in files:
+            bundle.write(root / relative, relative)
+        bundle.write(root / "manifest.json", "manifest.json")
+
+    return {
+        "path": str(archive),
+        "bytes": archive.stat().st_size,
+        "files": files + ["manifest.json"],
+        "botProfiles": len(profiles),
+        "plugin": spec.class_name,
+    }
+
+
+def format_report(result: dict[str, Any]) -> str:
+    lines = [
+        f"server bundle: {result.get('path')} ({result.get('bytes', 0) // 1024} KiB)",
+        f"  plugin: {result.get('plugin')}  bot profiles: {result.get('botProfiles')}",
+    ]
+    for name in result.get("files") or []:
+        lines.append(f"  {name}")
+    return "\n".join(lines)

@@ -1,9 +1,9 @@
-# Rust Studio architecture
+# KOBA Studios architecture
 
 ## 1. System shape
 
 ```
-+----------------------------- apps/desktop/ui (React + TypeScript) -----------------------------+
++----------------------------- apps/studio-ui (React + TypeScript) -----------------------------+
 |  Wizard state machine (pure reducer)      Three.js viewports                                  |
 |  - entry -> terrain -> monuments ->        - TerrainViewport: 8-channel splat shader,          |
 |    paths -> loot -> validate                 biome tint, alpha holes, topology overlay,       |
@@ -13,16 +13,16 @@
 +------------------------------------------+----------------------------------------------------+
                                            | Tauri invoke (typed in lib/ipc.ts)
 +------------------------------------------v----------------------------------------------------+
-| apps/desktop/src-tauri (Rust)                                                                 |
+| apps/src-tauri (Rust)                                                                 |
 |  commands: index_stats, list_prefabs, list_base_meshes, inspect_map, save_project,            |
 |            export_project, ingest_assets, sync_status                                         |
 |  - rusqlite: asset index, project store, sync outbox                                          |
 |  - world-codec crate: fast .map/.prefab inspection                                            |
-|  - subprocess: python -m rust_studio_engine export-project / ingest_assets.py                  |
+|  - subprocess: python -m koba_engine export-project / ingest_assets.py                  |
 +------------------------------------------+----------------------------------------------------+
                                            | loopback CLI / optional FastAPI sidecar
 +------------------------------------------v----------------------------------------------------+
-| engine/rust_studio_engine (Python)                                                            |
+| engine/koba_engine (Python)                                                            |
 |  world/   LZ4 legacy + protobuf codec, terrain brushes, layer validation                      |
 |  spline   centripetal Catmull-Rom, resampling, terrain-conforming ribbons                      |
 |  texture  channel packing, normal from height, Workshop PNG export                            |
@@ -96,7 +96,7 @@ References: Facepunch map data documentation and the RustEdit export docs.
 
 ## 3. Wizard state machine
 
-`apps/desktop/ui/src/wizard/machine.ts` is a pure reducer with no React or I/O:
+`apps/studio-ui/src/wizard/machine.ts` is a pure reducer with no React or I/O:
 
 - Two branches: `world` (`entry, terrain, monuments, paths, loot, validate`) and `skin`
   (`entry, baseItem, materials, paint, wear, workshop`). Changing project kind is only allowed on
@@ -106,9 +106,14 @@ References: Facepunch map data documentation and the RustEdit export docs.
 - `Studio Mode` is a persisted boolean. It unlocks direct step navigation and the manual tool panels
   (sculpt/paint brushes, transform outliner, topology masks, map lock, channel packing, UV
   diagnostics). Guided steps always remain usable without it.
-- `WizardProvider` persists the entire state (including placement and decal lists) to
-  `localStorage` so a reload resumes on the same step. In the shell, `save_project` mirrors the
-  draft into SQLite and `project.json`.
+- `WizardProvider` autosaves the draft (including placement and decal lists) to `localStorage`
+  after a 350 ms debounce so a reload resumes on the same step. The CUI frame is stripped and
+  imported heightmaps/masks are stored separately in IndexedDB keyed by `projectId` in the browser
+  build, then restored before the first autosave; workspace-tab copies are compact for the same
+  reason. The desktop shell skips IndexedDB because its native project state already carries the
+  grids. The top bar
+  surfaces **Saving draft**, **Autosaved HH:MM**, **Draft saved, grids not stored**, or
+  **Autosave failed**. In the shell, `save_project` mirrors the draft into SQLite and `project.json`.
 
 ## 4. Terrain rendering and editing
 
@@ -125,11 +130,28 @@ a custom `ShaderMaterial`:
   30 safe zone) and mixes an overlay colour. Game bits stay untouched.
 - 25 m contour lines give scale without textures.
 - Studio sculpting raycasts the terrain and applies the same kernel families as
-  `engine/.../terrain.py` (raise, lower, smooth, flatten, splat, topology, alpha). Pointer strokes
+  `engine/.../terrain.py` (raise, lower, smooth, flatten, erode, splat, topology, alpha). Erode
+  lowers each texel toward its lowest 4-neighbour, so repeated strokes cut gullies; smooth averages.
+  Pointer strokes
   update the preview and geometry, and increment `terrain.sculptStrokes`.
 - On export, Python regenerates the full-resolution layers from the seed and settings, then applies
   monument pads: `HeightField.flatten_pad` for the footprint and smooth falloff, plus topology marks
   for foliage clearing and no-build volumes.
+
+### Map notes, snapshots and deep links
+
+- `draft.notes` holds coordinate-anchored checklist pins. They serialize with `project_wizard_state`
+  (SQLite) and `project.json`, and the Terrain viewport draws them in the marker group.
+- `TerrainViewport.captureBirdseye` swaps in an orthographic top-down camera, hides helpers, renders
+  a 2048 px PNG and restores the perspective view. The shell writes PNGs to `data/snapshots/` with a
+  JSON index keyed by project, so the gallery survives restarts; the browser build falls back to
+  IndexedDB instead of the small localStorage quota.
+- `MarketplaceDrawer` serves a bundled catalogue plus the locally installed library when offline,
+  filtered to the asset kinds the active project can use (Map, Monument or Skin).
+- `kobastudios://` is registered with `tauri-plugin-deep-link`. Warm links arrive as
+  `koba://deep-link` events; a cold-start URL is parked until the workspace has attached its
+  listener and pulled it with `take_pending_deep_link`, so launch links are not lost to a splash
+  timer. `parseDeepLink` accepts install, open-project and auth callbacks.
 
 ## 5. Skin rendering and decal projection
 

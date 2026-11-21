@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rust_studio_engine.progress import ProgressWriter, read_progress
+from koba_engine.progress import ProgressWriter, read_progress
 
 
 def test_progress_writer_appends_json_lines(tmp_path) -> None:

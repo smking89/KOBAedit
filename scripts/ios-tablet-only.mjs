@@ -2,16 +2,16 @@
 // Restricts a generated Tauri iOS project to iPadOS only.
 //
 // Tauri's `ios init` template ships UIDeviceFamily = [1, 2] so the app also
-// installs on iPhones. KOBA EDIT targets tablets exclusively (the three-tab
+// installs on iPhones. KOBA Studios targets tablets exclusively (the three-tab
 // studio cannot shrink below 1024 px), so this rewrites every generated
 // Info.plist to UIDeviceFamily = [2] and requires full screen.
 //
-// Usage: node scripts/ios-tablet-only.mjs [apps/desktop/src-tauri/gen/apple]
+// Usage: node scripts/ios-tablet-only.mjs [apps/src-tauri/gen/apple]
 
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const root = resolve(process.argv[2] ?? "apps/desktop/src-tauri/gen/apple");
+const root = resolve(process.argv[2] ?? "apps/src-tauri/gen/apple");
 
 function plists(directory) {
   const found = [];

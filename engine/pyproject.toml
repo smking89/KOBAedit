@@ -3,12 +3,15 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rust-studio-engine"
-version = "0.1.0"
-description = "Offline geometry, WorldSerialization, texture and asset-index engine for Rust Studio."
+name = "koba-engine"
+version = "1.6.0"
+description = "Offline geometry, WorldSerialization, terrain, CUI and asset-index engine for KOBA Studios."
 requires-python = ">=3.10"
 dependencies = [
     "pillow>=10.0",
+    # sketch.py reconstructs sketches on numpy arrays: palette classification,
+    # box-blur Gaussians and the 16-bit height grid.
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
@@ -27,12 +30,12 @@ dev = [
 ]
 
 [project.scripts]
-rust-studio-engine = "rust_studio_engine.cli:main"
-rust-studio-ingest = "rust_studio_engine.cli:main"
-rust-studio-engine-serve = "rust_studio_engine.__main__:serve"
+koba-engine = "koba_engine.cli:main"
+rust-studio-ingest = "koba_engine.cli:main"
+koba-engine-serve = "koba_engine.__main__:serve"
 
 [tool.setuptools.packages.find]
-include = ["rust_studio_engine*"]
+include = ["koba_engine*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

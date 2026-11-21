@@ -8,11 +8,12 @@ import base64
 
 import pytest
 
-from rust_studio_engine.exporter import ExportError, export_draft
-from rust_studio_engine.world.map_file import read_document, validate_layout
-from rust_studio_engine.world.terrain import HeightField, encode_u16
-from rust_studio_engine.map_lock import LOCK_LAYER, unlock_map_lock
-from rust_studio_engine.world.models import STUDIO_META_LAYER
+from koba_engine.exporter import ExportError, export_draft, stretch_grid_onto_map
+from koba_engine.world.map_file import read_document, validate_layout
+from koba_engine.world.terrain import HeightField, encode_u16
+from koba_engine.map_lock import LOCK_LAYER, unlock_map_lock
+from koba_engine.world.models import STUDIO_META_LAYER, height_raw_to_metres
+from koba_engine.world.terrain import decode_u16
 
 
 def base_draft(kind: str = "map") -> dict:
@@ -74,6 +75,8 @@ def base_draft(kind: str = "map") -> dict:
 def test_native_heightmap_keeps_1025_grid_and_map_size(tmp_path) -> None:
     draft = base_draft("map")
     resolution = 1025
+    # 1025² is the native grid of a 1024 m map, so the map follows the grid.
+    draft["terrain"]["sizeMetres"] = resolution - 1
     heights = [((x * 7 + z * 3) % 65535) for z in range(resolution) for x in range(resolution)]
     draft["terrain"]["heightmap"] = {
         "name": "native.raw",
@@ -93,6 +96,145 @@ def test_native_heightmap_keeps_1025_grid_and_map_size(tmp_path) -> None:
     assert len(document.layers["terrain"]) == resolution * resolution * 2
     assert document.summary()["heightResolution"] == resolution
     assert not [issue for issue in validate_layout(document) if issue["severity"] == "error"]
+
+
+# Preview heights for the fixture below, produced by the editor's own
+# buildTerrainPreview at 257² on a 4500 m draft (sampleGrid is bilinear). The
+# last pick sits above Rust's +500 m ceiling, so both sides store the clipped 500.
+COARSE_PREVIEW_PICKS = [
+    (0, 0, 0.0),
+    (64, 32, 37.8729),
+    (128, 128, 242.4201),
+    (200, 96, 364.1108),
+    (256, 256, 500.0),
+    (37, 211, 339.498),
+]
+
+
+def coarse_fixture(resolution: int) -> list[int]:
+    """Smooth (quadratic) so upsampling error stays far below the tolerance,
+    yet integer-exact in both Python and the TypeScript preview."""
+    return [((x * x + z * z) // 33) for z in range(resolution) for x in range(resolution)]
+
+
+def sample_bilinear(raw: list[int], resolution: int, u: float, v: float) -> float:
+    """Same interpolation the editor uses (terrainImport.sampleGrid)."""
+    gx = max(0.0, min(resolution - 1.0, u * (resolution - 1)))
+    gz = max(0.0, min(resolution - 1.0, v * (resolution - 1)))
+    x0 = int(gx)
+    z0 = int(gz)
+    x1 = min(resolution - 1, x0 + 1)
+    z1 = min(resolution - 1, z0 + 1)
+    tx = gx - x0
+    tz = gz - z0
+    top = raw[z0 * resolution + x0] * (1 - tx) + raw[z0 * resolution + x1] * tx
+    bottom = raw[z1 * resolution + x0] * (1 - tx) + raw[z1 * resolution + x1] * tx
+    return top * (1 - tz) + bottom * tz
+
+
+def test_stretch_grid_onto_map_interpolates_and_clips() -> None:
+    """The exporter resample is plain bilinear on the source grid.
+
+    Raw values are elevation in the 0-1000 m import convention: 0, 500, 250 and
+    750 m here, so the last corner must be clipped at the layer ceiling exactly
+    as the preview clips it. This is the fast half of the old full-map test; one
+    end-to-end case still checks the export path itself.
+    """
+    grid = [0, 32768, 16384, 49152]
+    stretched = stretch_grid_onto_map(grid, 2, 3)
+    metres = [height_raw_to_metres(value) for value in stretched]
+
+    assert len(stretched) == 9
+    assert metres[0] == pytest.approx(0, abs=0.02)
+    assert metres[1] == pytest.approx(250, abs=0.02)  # edge midpoint
+    assert metres[2] == pytest.approx(500, abs=0.02)
+    assert metres[4] == pytest.approx(375, abs=0.02)  # centre = mean of corners
+    assert metres[6] == pytest.approx(250, abs=0.02)
+    assert metres[8] == pytest.approx(500, abs=0.02)  # 750 m clipped to the ceiling
+
+    scaled = [height_raw_to_metres(value) for value in stretch_grid_onto_map(grid, 2, 3, 2.0)]
+    assert max(scaled) == pytest.approx(500, abs=0.02)
+    assert scaled[0] == pytest.approx(0, abs=0.02)
+
+
+def test_png_labelled_import_exports_identically_to_raw(tmp_path) -> None:
+    """A PNG-sourced heightmap takes the same export path as a RAW one.
+
+    The editor normalises both imports to the same uint16 payload and keeps
+    ``encoding`` only as provenance, so a PNG-labelled draft must export
+    byte-identical terrain. The map is 1050 m - just above the 1024 m coarse
+    threshold - to keep this fast; the pinned preview picks are normalised, so
+    they do not depend on the map size.
+    """
+    resolution = 1025
+    payload = base64.b64encode(encode_u16(coarse_fixture(resolution))).decode("ascii")
+    documents = {}
+    for encoding in ("raw16", "png16"):
+        draft = base_draft("map")
+        draft["terrain"]["sizeMetres"] = 1050
+        draft["terrain"]["heightmap"] = {
+            "name": f"fixture.{encoding}",
+            "resolution": resolution,
+            "encoding": encoding,
+            "data": payload,
+            "minHeight": 0,
+            "maxHeight": 1000,
+            "verticalScale": 1,
+        }
+        draft["placements"] = []
+        draft["splines"] = []
+        draft["export"]["mapLock"] = False
+        draft["export"]["fileName"] = f"parity-{encoding}"
+        documents[encoding] = read_document(export_draft(draft, output_dir=tmp_path).path)
+
+    png, raw = documents["png16"], documents["raw16"]
+    assert png.size == raw.size == 1050
+    assert png.layers["terrain"] == raw.layers["terrain"]
+    assert png.layers["height"] == raw.layers["height"]
+
+    values = decode_u16(png.layers["terrain"])
+    for x, z, expected in COARSE_PREVIEW_PICKS:
+        sampled = sample_bilinear(values, png.size + 1, x / 256, z / 256)
+        assert height_raw_to_metres(round(sampled)) == pytest.approx(expected, abs=0.05), (
+            f"PNG-sourced export drifted from the preview at preview index ({x}, {z})"
+        )
+
+
+def test_coarse_import_exports_the_preview_the_user_saw(tmp_path) -> None:
+    """A 1025² grid on a 2250 m map must export exactly what the preview draws.
+
+    The picks are preview-index fractions, so the target grid only has to be
+    large enough to exercise normalisation and smaller than the map size; 2250 m
+    keeps the export to a quarter of the work of the old 4500 m fixture.
+    """
+    resolution = 1025
+    draft = base_draft("map")
+    draft["terrain"]["sizeMetres"] = 2250
+    draft["terrain"]["heightmap"] = {
+        "name": "fixture.raw",
+        "resolution": resolution,
+        "encoding": "raw16",
+        "data": base64.b64encode(encode_u16(coarse_fixture(resolution))).decode("ascii"),
+        "minHeight": 0,
+        "maxHeight": 1000,
+        "verticalScale": 1,
+    }
+    draft["placements"] = []
+    draft["splines"] = []
+    draft["export"]["mapLock"] = False
+
+    document = read_document(export_draft(draft, output_dir=tmp_path).path)
+    assert document.size == 2250
+    exported = decode_u16(document.layers["terrain"])
+    exported_resolution = document.size + 1
+    assert len(exported) == exported_resolution * exported_resolution
+
+    for x, z, expected in COARSE_PREVIEW_PICKS:
+        raw = sample_bilinear(exported, exported_resolution, x / 256, z / 256)
+        # uint16 quantisation of a 1000 m layer is ~1.5 cm, so 5 cm is generous.
+        assert height_raw_to_metres(round(raw)) == pytest.approx(expected, abs=0.05), (
+            f"export drifted from the preview at preview index ({x}, {z})"
+        )
 
 
 def test_native_import_rejects_grids_above_limit() -> None:
@@ -276,7 +418,7 @@ def test_layer_order_drives_replay_order(tmp_path) -> None:
 
 
 def test_native_mask_resampling_keeps_detail() -> None:
-    from rust_studio_engine.exporter import _resample_mask
+    from koba_engine.exporter import _resample_mask
 
     checker = bytes(255 if (x + z) % 2 else 0 for z in range(8) for x in range(8))
     # An exact grid is passed through untouched, byte for byte.
@@ -289,7 +431,7 @@ def test_native_mask_resampling_keeps_detail() -> None:
 
 
 def test_native_mask_is_resampled_onto_the_layer_grid(tmp_path) -> None:
-    from rust_studio_engine.world.terrain import EDITOR_TOPOLOGY_FLAGS, decode_i32
+    from koba_engine.world.terrain import EDITOR_TOPOLOGY_FLAGS, decode_i32
 
     draft = base_draft("map")
     draft["placements"] = []

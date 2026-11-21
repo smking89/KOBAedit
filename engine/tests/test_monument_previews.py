@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PIL import Image
 
-from rust_studio_engine.indexer.monument_previews import _key, _match_scene, shade_height_map
+from koba_engine.indexer.monument_previews import _key, _match_scene, shade_height_map
 
 
 def test_shade_height_map_renders_relief_not_a_flat_sheet() -> None:

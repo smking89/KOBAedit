@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>KOBA Studios</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #0b0d10;
+        color: #ffffff;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .splash {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+      }
+
+      /* Two stacked layers: the incoming hero fades in above the outgoing one. */
+      .splash-bg {
+        position: absolute;
+        inset: 0;
+        background-color: #0b0d10;
+        background-position: center;
+        background-size: cover;
+        background-repeat: no-repeat;
+        opacity: 0;
+        transition: opacity 900ms ease-in-out;
+        will-change: opacity, transform;
+      }
+
+      .splash-bg.is-on {
+        opacity: 1;
+        animation: splash-ken-burns 9s ease-out both;
+      }
+
+      @keyframes splash-ken-burns {
+        from {
+          transform: scale(1.04);
+        }
+        to {
+          transform: scale(1);
+        }
+      }
+
+      /* The background layers get an inline z-index of 1/2 from splash.ts, so the
+         scrim and every piece of chrome must sit above them by number. */
+      .splash-scrim {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        background: linear-gradient(
+          to top,
+          rgba(10, 14, 23, 0.94) 0%,
+          rgba(10, 14, 23, 0.52) 50%,
+          rgba(10, 14, 23, 0.12) 100%
+        );
+      }
+
+      .splash-version {
+        position: absolute;
+        z-index: 4;
+        top: 12px;
+        left: 18px;
+        font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+        font-size: 10px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.55);
+      }
+
+      /* Anchored once: every hero shows the wordmark in this exact spot. */
+      .splash-brand {
+        position: absolute;
+        z-index: 4;
+        left: 42px;
+        bottom: 40px;
+        display: grid;
+        justify-items: start;
+        gap: 8px;
+      }
+
+      .splash-brand img {
+        width: 190px;
+        height: auto;
+        filter: brightness(0) invert(1) drop-shadow(0 12px 28px rgba(0, 0, 0, 0.55));
+      }
+
+      .splash-brand p {
+        margin: 0;
+        font-size: 11px;
+        line-height: 1.4;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.72);
+      }
+
+      .splash-status {
+        position: absolute;
+        z-index: 4;
+        right: 42px;
+        bottom: 46px;
+        display: flex;
+        align-items: baseline;
+        gap: 16px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .splash-step {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.72);
+      }
+
+      .splash-percent {
+        font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+        font-size: 16px;
+        color: #ffffff;
+      }
+
+      /* 18px brush-stroke bar: crimson outline, white inner fill. */
+      .splash-bar {
+        position: absolute;
+        z-index: 4;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 18px;
+      }
+
+      .splash-bar::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: #ef1c1c;
+        clip-path: polygon(0 26%, 100% 0, 100% 74%, 0 100%);
+      }
+
+      .splash-fill {
+        position: absolute;
+        left: 4px;
+        top: 4px;
+        bottom: 4px;
+        width: 0;
+        background: #ffffff;
+        clip-path: polygon(0 26%, 100% 0, 100% 74%, 0 100%);
+        transition: width 180ms ease-out;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .splash-bg,
+        .splash-bg.is-on,
+        .splash-fill {
+          animation: none;
+          transition: opacity 200ms linear;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="splash" role="status" aria-live="polite" aria-label="Loading KOBA Studios">
+      <div class="splash-bg" id="bg-a"></div>
+      <div class="splash-bg" id="bg-b"></div>
+      <div class="splash-scrim"></div>
+      <span class="splash-version" id="splash-version">v1.6.0</span>
+      <div class="splash-brand">
+        <img src="/branding/koba-studios-wordmark.png" alt="KOBA Studios" draggable="false" />
+        <p>Map, Monument, Skin &amp; CUI Studio</p>
+      </div>
+      <div class="splash-status">
+        <span class="splash-step" id="splash-step">Starting KOBA Studios</span>
+        <span class="splash-percent" id="splash-percent">0%</span>
+      </div>
+      <div class="splash-bar" aria-hidden="true"><div class="splash-fill" id="splash-fill"></div></div>
+    </div>
+    <script type="module" src="/src/splash.ts"></script>
+  </body>
+</html>

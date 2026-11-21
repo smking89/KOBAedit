@@ -1,0 +1,34 @@
+{
+  "name": "@koba/studio-ui",
+  "private": true,
+  "version": "1.6.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "preview": "vite preview",
+    "map:kings-curse": "tsc -p tsconfig.scripts.json && esbuild scripts/build-kings-curse-map.ts --bundle --platform=node --format=esm --log-level=warning --outfile=node_modules/.cache/kings-curse-build.mjs && node node_modules/.cache/kings-curse-build.mjs",
+    "monument:import": "tsc -p tsconfig.scripts.json && esbuild scripts/import-monument.ts --bundle --platform=node --format=esm --log-level=warning --outfile=node_modules/.cache/monument-import.mjs && node node_modules/.cache/monument-import.mjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "fflate": "^0.8.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/three": "^0.169.0",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
