@@ -43,7 +43,8 @@ test("local scanner collapses duplicates and keeps variants and part groups", ()
 });
 
 
-test("rescan prunes files deleted from a scanned root", () => {
+// Needs python3 and the sqlite3 CLI on PATH, which Windows CI runners lack.
+test("rescan prunes files deleted from a scanned root", { skip: process.platform === "win32" }, () => {
   const root = mkdtempSync(join(tmpdir(), "koba-stale-"));
   try {
     const assets = join(root, "Assets/Mesh");

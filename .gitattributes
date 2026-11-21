@@ -1,0 +1,10 @@
+# Binary fixtures must never get line-ending conversion on Windows checkouts.
+apps/studio-ui/tests/fixtures/* binary
+*.png binary
+*.ico binary
+*.icns binary
+*.webp binary
+*.jpg binary
+*.glb binary
+*.bin binary
+*.raw binary
