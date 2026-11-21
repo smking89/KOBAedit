@@ -151,6 +151,7 @@ export function Viewport({
             onOpenPlacement: (id) => callbacks.current.onOpenPlacement?.(id),
           },
         );
+        viewport.setBackdrop(theme);
         worldRef.current = viewport;
         callbacks.current.onGroundPicker?.({
           pick: (x, y) => viewport.pickGround(x, y),

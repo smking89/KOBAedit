@@ -463,11 +463,12 @@ export default function App() {
   const [assetBusy, setAssetBusy] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
   const [promoRequest, setPromoRequest] = useState<(PromoRequest & { id: number }) | null>(null);
+  const [theme] = useState(loadTheme);
   const brandingRef = useRef(brandingState);
 
   useEffect(() => {
-    applyTheme(loadTheme());
-  }, []);
+    applyTheme(theme);
+  }, [theme]);
 
 
 
@@ -1251,7 +1252,7 @@ export default function App() {
             )}
             <Viewport
               key={quality}
-              theme="dark"
+              theme={theme}
               draft={draft}
               stepId={state.stepId}
               onSculpt={(strokes) => dispatch({ type: "addStrokes", strokes })}

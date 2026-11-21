@@ -257,6 +257,8 @@ export class TerrainViewport {
   private markerKey = "";
   private lightingKey = "";
   private underground = false;
+  /** UI theme backdrop; the sky stays dynamic for lighting and fog. */
+  private backdropTheme: "dark" | "light" = "dark";
   /** Placement currently being dragged across the terrain. */
   private moving: {
     id: string;
@@ -305,7 +307,7 @@ export class TerrainViewport {
     this.host.dataset.qualityPixelRatio = String(this.quality.pixelRatio);
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x090a0c);
+    this.scene.background = new THREE.Color(0x25272c);
     this.scene.fog = new THREE.Fog(0x0b0e12, 1600, 5200);
 
     this.camera = new THREE.PerspectiveCamera(48, 1, 0.5, 12000);
@@ -1552,7 +1554,8 @@ export class TerrainViewport {
 
   /** Theme backdrop only; camera, build and walk state are untouched. */
   setBackdrop(theme: "dark" | "light"): void {
-    const color = new THREE.Color(theme === "light" ? 0xe9ecef : 0x090a0c);
+    this.backdropTheme = theme;
+    const color = new THREE.Color(theme === "light" ? 0xd0d2d6 : 0x25272c);
     if (this.scene.background instanceof THREE.Color) {
       this.scene.background.copy(color);
     } else {
@@ -2328,8 +2331,9 @@ export class TerrainViewport {
   }
 
   /**
-   * Sky, fog and lights are the floor palette blended with the sun/weather
-   * state, so the 24-hour slider changes mood without a terrain rebuild.
+   * Fog and lights are the floor palette blended with the sun/weather state,
+   * so the 24-hour slider changes mood without a terrain rebuild. The canvas
+   * itself stays on the neutral editor backdrop for the active UI theme.
    */
   private applyEnvironment(): void {
     const terrain = this.draft?.terrain;
@@ -2366,7 +2370,9 @@ export class TerrainViewport {
           ? 0x121316
           : underground
             ? UNDERGROUND_LIGHTING.fogColor
-            : blendHex(scheme.sky, lighting.skyColor, 0.6),
+            : this.backdropTheme === "light"
+              ? 0xd0d2d6
+              : 0x25272c,
       );
     }
     if (this.scene.fog instanceof THREE.Fog) {
