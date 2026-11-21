@@ -257,8 +257,10 @@ export class TerrainViewport {
   private markerKey = "";
   private lightingKey = "";
   private underground = false;
-  /** UI theme backdrop; the sky stays dynamic for lighting and fog. */
+  /** UI theme backdrop for the editor; captures use the dynamic sky below. */
   private backdropTheme: "dark" | "light" = "dark";
+  /** Dynamic sky derived from the floor palette, time and weather. */
+  private captureSky = 0x0b0e12;
   /** Placement currently being dragged across the terrain. */
   private moving: {
     id: string;
@@ -1570,12 +1572,15 @@ export class TerrainViewport {
     const grid = this.grid;
     const gridVisible = grid?.visible ?? false;
     if (grid) grid.visible = false;
+    const background = this.scene.background;
+    this.scene.background = new THREE.Color(this.captureSky);
     this.renderer.render(this.scene, this.camera);
     const source = this.renderer.domElement;
     const output = document.createElement("canvas");
     output.width = source.width;
     output.height = source.height;
     output.getContext("2d")?.drawImage(source, 0, 0);
+    this.scene.background = background;
     if (grid) grid.visible = gridVisible;
     this.requestRender();
     return output;
@@ -1599,7 +1604,9 @@ export class TerrainViewport {
     ortho.updateProjectionMatrix();
 
     const savedFog = this.scene.fog;
+    const savedBackground = this.scene.background;
     this.scene.fog = null;
+    this.scene.background = new THREE.Color(this.captureSky);
     const grid = this.grid;
     const gridVisible = grid?.visible ?? false;
     if (grid) grid.visible = options.grid ?? false;
@@ -1618,6 +1625,7 @@ export class TerrainViewport {
 
     this.renderer.setPixelRatio(pixelRatio);
     this.scene.fog = savedFog;
+    this.scene.background = savedBackground;
     if (grid) grid.visible = gridVisible;
     this.markerGroup.visible = markersVisible;
     this.resize();
@@ -1649,6 +1657,8 @@ export class TerrainViewport {
     const grid = this.grid;
     const gridVisible = grid?.visible ?? false;
     if (grid) grid.visible = false;
+    const savedBackground = this.scene.background;
+    this.scene.background = new THREE.Color(this.captureSky);
     const savedPosition = this.camera.position.clone();
     const savedTarget = this.controls.target.clone();
     const savedControls = this.controls.enabled;
@@ -1713,6 +1723,7 @@ export class TerrainViewport {
         this.camera.position.copy(savedPosition);
         this.controls.target.copy(savedTarget);
         this.controls.enabled = savedControls;
+        this.scene.background = savedBackground;
         if (grid) grid.visible = gridVisible;
         this.requestRender();
         return null;
@@ -1768,6 +1779,7 @@ export class TerrainViewport {
     this.camera.position.copy(savedPosition);
     this.controls.target.copy(savedTarget);
     this.controls.enabled = savedControls;
+    this.scene.background = savedBackground;
     if (grid) grid.visible = gridVisible;
     this.requestRender();
     return blob;
@@ -2363,16 +2375,20 @@ export class TerrainViewport {
     const monumentStudio = this.draft?.projectKind === "monument";
     if (this.water) this.water.visible = !monumentStudio;
 
+    this.captureSky = monumentStudio
+      ? 0x121316
+      : underground
+        ? UNDERGROUND_LIGHTING.fogColor
+        : blendHex(scheme.sky, lighting.skyColor, 0.6);
+
     const background = this.scene.background;
     if (background instanceof THREE.Color) {
       background.setHex(
-        monumentStudio
-          ? 0x121316
-          : underground
-            ? UNDERGROUND_LIGHTING.fogColor
-            : this.backdropTheme === "light"
-              ? 0xd0d2d6
-              : 0x25272c,
+        monumentStudio || underground
+          ? this.captureSky
+          : this.backdropTheme === "light"
+            ? 0xd0d2d6
+            : 0x25272c,
       );
     }
     if (this.scene.fog instanceof THREE.Fog) {

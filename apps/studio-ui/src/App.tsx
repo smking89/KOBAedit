@@ -1076,10 +1076,7 @@ export default function App() {
               Bird's-Eye
             </Button>
           )}
-          <Button
-            variant={draft.studioMode ? "primary" : "ghost"}
-            onClick={() => dispatch({ type: "toggleStudio" })}
-          >
+          <Button variant="ghost" onClick={() => dispatch({ type: "toggleStudio" })}>
             {draft.studioMode ? "Wizard Mode" : "Studio Mode"}
           </Button>
           <button
@@ -1105,7 +1102,7 @@ export default function App() {
           {draft.branch === "world" && (
             <span className="topbar-walk">
               <Button
-                variant={draft.walkMode ? "primary" : "ghost"}
+                variant="ghost"
                 onClick={() => dispatch({ type: "setWalkMode", enabled: !draft.walkMode })}
               >
                 {draft.walkMode ? "Exit Walk" : "Walk Mode"}

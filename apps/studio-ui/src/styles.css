@@ -6494,6 +6494,7 @@ body { background:#1d1d1d; }
   --accent-soft: rgba(217, 56, 58, 0.14);
   --accent-line: rgba(217, 56, 58, 0.45);
   --canvas: #25272c;
+  --glass: rgba(42, 42, 48, 0.82);
 }
 
 :root[data-theme="light"] {
@@ -6515,6 +6516,7 @@ body { background:#1d1d1d; }
   --accent-soft: rgba(201, 42, 44, 0.1);
   --accent-line: rgba(201, 42, 44, 0.38);
   --canvas: #d0d2d6;
+  --glass: rgba(255, 255, 255, 0.8);
 }
 
 html,
@@ -6617,6 +6619,24 @@ body,
 .classic-menu-pop button:hover {
   background: var(--panel-hover) !important;
   color: var(--text) !important;
+}
+
+.viewport-note,
+.viewport-hud > div,
+.lighting-strip {
+  background: var(--glass) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--muted) !important;
+}
+
+:root[data-theme="light"] .viewport-note,
+:root[data-theme="light"] .viewport-hud > div {
+  background: var(--glass) !important;
+  border-color: var(--border) !important;
+}
+
+.hud-label {
+  color: var(--muted) !important;
 }
 
 .viewport-subheader {
@@ -6826,6 +6846,50 @@ body,
   color: var(--text) !important;
 }
 
+/* The top-bar action is the single primary in the main workspace. */
+.property-content .btn-primary {
+  background: var(--panel-strong) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-dim) !important;
+}
+
+.property-content .btn-primary:hover:not(:disabled) {
+  background: var(--panel-hover) !important;
+  color: var(--text) !important;
+}
+
+/* Marketplace cards are repeated items, so their CTAs stay secondary. */
+.marketplace-card .btn {
+  background: var(--panel-strong) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-dim) !important;
+}
+
+.marketplace-card .btn:hover:not(:disabled) {
+  background: var(--panel-hover) !important;
+  color: var(--text) !important;
+}
+
+.asset-card {
+  background: var(--surface) !important;
+  border-color: var(--border) !important;
+}
+
+.asset-card:hover {
+  background: var(--panel-hover) !important;
+  border-color: var(--accent-line) !important;
+}
+
+.asset-list .asset-card {
+  background: transparent !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--border-soft) !important;
+}
+
+.asset-list .asset-card:hover {
+  background: var(--panel-hover) !important;
+}
+
 .badge {
   background: var(--panel-strong) !important;
   border-color: var(--border) !important;
@@ -6963,6 +7027,22 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text) !important;
 }
 
+.issue {
+  background: var(--surface) !important;
+  border-color: var(--border) !important;
+}
+
+.eyebrow,
+.branding-eyebrow {
+  color: var(--muted) !important;
+  opacity: 0.9;
+}
+
+.issue-info .issue-severity {
+  background: var(--accent-soft) !important;
+  color: var(--accent) !important;
+}
+
 .launcher {
   background: var(--panel) !important;
   border: 1px solid var(--border) !important;
@@ -7069,4 +7149,23 @@ input[type="range"]::-moz-range-thumb {
   background: var(--panel) !important;
   border-color: var(--border) !important;
   color: var(--text) !important;
+}
+
+html {
+  scrollbar-color: var(--border) transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border: 3px solid var(--bg);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+code,
+:root[data-theme="light"] code {
+  background: var(--panel-hover);
+  color: var(--text);
 }
