@@ -107,13 +107,15 @@ References: Facepunch map data documentation and the RustEdit export docs.
   (sculpt/paint brushes, transform outliner, topology masks, map lock, channel packing, UV
   diagnostics). Guided steps always remain usable without it.
 - `WizardProvider` autosaves the draft (including placement and decal lists) to `localStorage`
-  after a 350 ms debounce so a reload resumes on the same step. The CUI frame is stripped and
-  imported heightmaps/masks are stored separately in IndexedDB keyed by `projectId` in the browser
-  build, then restored before the first autosave; workspace-tab copies are compact for the same
-  reason. The desktop shell skips IndexedDB because its native project state already carries the
-  grids. The top bar
-  surfaces **Saving draft**, **Autosaved HH:MM**, **Draft saved, grids not stored**, or
-  **Autosave failed**. In the shell, `save_project` mirrors the draft into SQLite and `project.json`.
+  after a 350 ms debounce so a reload resumes on the same step. The CUI frame is stripped. Imported
+  grids stay in that draft only while their base64 payload is under **4,000,000 characters**;
+  native 2049² (~11.2M) and 4097² (~44.8M) raw16 grids exceed it. The browser build stores grids
+  separately in IndexedDB keyed by `projectId`, restores them before the first autosave, and flushes
+  them on a workspace switch; workspace-tab copies are compact for the same reason. The desktop
+  shell skips IndexedDB, so workspace switches do not flush there: autosave omits native grids and
+  reports a partial save until `save_project` writes them into `project.json`. The top bar surfaces
+  **Saving draft**, **Autosaved HH:MM**, **Draft saved, grids not stored**, or **Autosave failed**.
+  In the shell, `save_project` mirrors the draft into SQLite and `project.json`.
 
 ## 4. Terrain rendering and editing
 

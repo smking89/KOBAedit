@@ -12,7 +12,11 @@ import {
 
 import { activeLayer, clampOpacity, migrateLayers } from "../lib/layers";
 import { isTauri } from "../lib/ipc";
-import { mergeSeedPlacements, syncSharedPlacements } from "../lib/workspaceSync";
+import {
+  mergeSeedPlacements,
+  syncSharedPlacements,
+  workspaceGridsForIndexedDb,
+} from "../lib/workspaceSync";
 import {
   branchFor,
   createInitialDraft,
@@ -24,6 +28,7 @@ import {
   type WizardAction,
 } from "./machine";
 import { stateForLocalStorage, stateForStorage, writeAutosave } from "./autosave.ts";
+import { autosavePhase, type AutosaveState } from "./autosaveStatus.ts";
 import { clearTerrainGrids, readTerrainGrids, writeTerrainGrids } from "../lib/gridStore";
 import type {
   PrefabPlacement,
@@ -62,14 +67,6 @@ function saveWorkspaces(workspaces: Partial<Record<ProjectKind, WizardState>>): 
   } catch {
     // Editing continues in memory if even the compact workspaces cannot fit.
   }
-}
-
-export type AutosavePhase = "idle" | "saving" | "saved" | "partial" | "error";
-
-export interface AutosaveState {
-  phase: AutosavePhase;
-  /** Last successful draft write; retained when a later write fails. */
-  savedAt: string | null;
 }
 
 interface WizardContextValue {
@@ -497,10 +494,12 @@ export function WizardProvider({ children }: { children: ReactNode }) {
         }
         const local = writeAutosave(STORAGE_KEY, state);
         if (disposed) return;
-        // Desktop drafts have only localStorage, so an omitted grid is a
-        // partial save there; browser grids are covered by IndexedDB above.
-        const gridsDurable = DESKTOP_SHELL ? !local.omittedGrids : gridsStored;
-        const phase = !local.ok ? "error" : gridsDurable ? "saved" : "partial";
+        const phase = autosavePhase({
+          ok: local.ok,
+          omittedGrids: local.omittedGrids,
+          gridsStored,
+          desktop: DESKTOP_SHELL,
+        });
         setAutosave((current) => ({
           phase,
           savedAt: local.ok ? new Date().toISOString() : current.savedAt,
@@ -542,8 +541,9 @@ export function WizardProvider({ children }: { children: ReactNode }) {
       // A switch inside the autosave debounce must not lose freshly imported
       // grids: the workspace copy is compact, so flush them to IndexedDB now.
       const terrain = state.draft.terrain;
-      if (!DESKTOP_SHELL && (terrain.heightmap || terrain.masks.length > 0)) {
-        void writeTerrainGrids(state.draft.projectId, terrain.heightmap, terrain.masks);
+      const grids = workspaceGridsForIndexedDb(terrain, DESKTOP_SHELL);
+      if (grids) {
+        void writeTerrainGrids(state.draft.projectId, grids.heightmap, grids.masks);
       }
       // Walk mode is a transient camera state; never carry it across tabs.
       workspaces.current[state.draft.projectKind] = {

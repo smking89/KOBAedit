@@ -1,8 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { mergeSeedPlacements, syncSharedPlacements } from "../src/lib/workspaceSync.ts";
-import type { PrefabPlacement } from "../src/wizard/types.ts";
+import {
+  mergeSeedPlacements,
+  syncSharedPlacements,
+  workspaceGridsForIndexedDb,
+} from "../src/lib/workspaceSync.ts";
+import type {
+  PrefabPlacement,
+  TerrainHeightImport,
+  TerrainMaskImport,
+} from "../src/wizard/types.ts";
+
+const NATIVE_HEIGHTMAP: TerrainHeightImport = {
+  name: "height.raw",
+  resolution: 2049,
+  encoding: "raw16",
+  data: "AAAA",
+  minHeight: -500,
+  maxHeight: 500,
+  verticalScale: 1,
+};
+
+const NATIVE_MASK: TerrainMaskImport = {
+  id: "mask-0",
+  name: "splat.png",
+  kind: "splat",
+  channel: 0,
+  resolution: 4097,
+  data: "AAAA",
+};
 
 function placement(id: string, x: number, name = `Prefab ${id}`): PrefabPlacement {
   return {
@@ -67,6 +94,26 @@ test("non-uniform scale edits reach the map copy without aliasing", () => {
 test("unchanged placements keep array identity", () => {
   const map = [placement("a", 10)];
   assert.equal(syncSharedPlacements(map, [placement("a", 10)]), map);
+});
+
+test("a browser workspace switch flushes imported grids to IndexedDB", () => {
+  const grids = workspaceGridsForIndexedDb(
+    { heightmap: NATIVE_HEIGHTMAP, masks: [NATIVE_MASK] },
+    false,
+  );
+  assert.equal(grids?.heightmap, NATIVE_HEIGHTMAP);
+  assert.deepEqual(grids?.masks, [NATIVE_MASK]);
+});
+
+test("a desktop workspace switch never touches IndexedDB", () => {
+  assert.equal(
+    workspaceGridsForIndexedDb({ heightmap: NATIVE_HEIGHTMAP, masks: [NATIVE_MASK] }, true),
+    null,
+  );
+});
+
+test("a workspace switch without grids skips the grid store", () => {
+  assert.equal(workspaceGridsForIndexedDb({ heightmap: undefined, masks: [] }, false), null);
 });
 
 test("re-opening a prefab in Monument keeps the existing monument work", () => {

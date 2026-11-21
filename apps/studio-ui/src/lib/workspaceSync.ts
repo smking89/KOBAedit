@@ -1,4 +1,4 @@
-import type { PrefabPlacement } from "../wizard/types";
+import type { PrefabPlacement, TerrainHeightImport, TerrainMaskImport } from "../wizard/types";
 
 /**
  * Monument workspaces opened from a map prefab share that prefab's id, so
@@ -38,6 +38,24 @@ export function syncSharedPlacements(
     };
   });
   return changed ? next : mapPlacements;
+}
+
+export interface WorkspaceGrids {
+  heightmap: TerrainHeightImport | undefined;
+  masks: TerrainMaskImport[];
+}
+
+/**
+ * Switching workspaces inside the autosave debounce must flush newly imported
+ * grids. Desktop projects keep them in the native project, so IndexedDB is
+ * never touched there.
+ */
+export function workspaceGridsForIndexedDb(
+  terrain: { heightmap?: TerrainHeightImport; masks: TerrainMaskImport[] },
+  desktop: boolean,
+): WorkspaceGrids | null {
+  if (desktop || (!terrain.heightmap && terrain.masks.length === 0)) return null;
+  return { heightmap: terrain.heightmap, masks: terrain.masks };
 }
 
 /**

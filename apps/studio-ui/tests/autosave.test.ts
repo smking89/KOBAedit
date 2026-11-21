@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AUTOSAVE_GRID_CHAR_LIMIT,
   draftForStorage,
   stateForLocalStorage,
   stateForStorage,
@@ -9,7 +10,12 @@ import {
 } from "../src/wizard/autosave.ts";
 import type { WizardDraft, WizardState } from "../src/wizard/types.ts";
 
-function stateWithTerrain(dataChars: number, masks: number): WizardState {
+function stateWithTerrain(
+  dataChars: number,
+  masks: number,
+  heightResolution = 4097,
+  maskResolution = 4097,
+): WizardState {
   const draft = {
     name: "quota-test",
     cuiFrame: {
@@ -23,7 +29,7 @@ function stateWithTerrain(dataChars: number, masks: number): WizardState {
     terrain: {
       heightmap: {
         name: "height.raw",
-        resolution: 4097,
+        resolution: heightResolution,
         encoding: "raw16",
         data: "B".repeat(dataChars),
         minHeight: -500,
@@ -35,7 +41,7 @@ function stateWithTerrain(dataChars: number, masks: number): WizardState {
         name: `mask-${index}.png`,
         kind: "splat" as const,
         channel: index,
-        resolution: 4097,
+        resolution: maskResolution,
         data: "C".repeat(dataChars),
       })),
     },
@@ -50,6 +56,15 @@ test("the CUI frame is stripped from durable saves but a heightmap survives", ()
   assert.equal(stored.draft.cuiFrame, undefined);
   assert.ok(stored.draft.terrain.heightmap?.data);
   assert.equal(stored.draft.terrain.masks.length, 1);
+});
+
+test("native 2049 and 4097 grids survive durable saves", () => {
+  const state = stateWithTerrain(64, 1, 2049, 4097);
+  const stored = stateForStorage(state);
+  assert.equal(stored.draft.terrain.heightmap?.resolution, 2049);
+  assert.equal(stored.draft.terrain.heightmap?.data, "B".repeat(64));
+  assert.equal(stored.draft.terrain.masks[0]?.resolution, 4097);
+  assert.equal(stored.draft.terrain.masks[0]?.data, "C".repeat(64));
 });
 
 test("the localStorage fallback drops heightmaps and masks only", () => {
@@ -87,6 +102,39 @@ test("an oversized payload is written compactly without a doomed full write", ()
     assert.equal(parsed.draft.terrain.heightmap, undefined);
     assert.deepEqual(parsed.draft.terrain.masks, []);
     assert.deepEqual(parsed.draft.placements, state.draft.placements);
+  } finally {
+    (globalThis as { window?: unknown }).window = previousWindow;
+  }
+});
+
+test("a native 2049 heightmap is omitted from the local autosave", () => {
+  const nativeChars = 4 * Math.ceil((2049 * 2049 * 2) / 3);
+  assert.ok(nativeChars > AUTOSAVE_GRID_CHAR_LIMIT);
+  const store = new Map<string, string>();
+  let writes = 0;
+  const localStorage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      writes += 1;
+      if (value.length > AUTOSAVE_GRID_CHAR_LIMIT) {
+        throw new Error("native grid should not be stringified into localStorage");
+      }
+      store.set(key, value);
+    },
+  };
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = { localStorage };
+  try {
+    const state = stateWithTerrain(nativeChars, 0, 2049, 4097);
+    const result = writeAutosave("test:native", state);
+    assert.equal(result.ok, true);
+    assert.equal(result.omittedGrids, true);
+    assert.equal(writes, 1);
+    const raw = store.get("test:native");
+    assert.ok(raw);
+    assert.ok(raw.length < 100_000, `stored ${raw.length} characters`);
+    const parsed = JSON.parse(raw) as WizardState;
+    assert.equal(parsed.draft.terrain.heightmap, undefined);
   } finally {
     (globalThis as { window?: unknown }).window = previousWindow;
   }

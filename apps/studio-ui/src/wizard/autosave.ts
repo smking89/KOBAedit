@@ -55,9 +55,11 @@ function hasTerrainGrids(state: WizardState): boolean {
 /**
  * Base64 larger than this cannot fit a ~5 MB localStorage quota even before
  * the rest of the draft, so there is no point stringifying tens of megabytes
- * on every edit just to watch setItem reject it.
+ * on every edit just to watch setItem reject it. A native 2049² raw16
+ * heightmap is about 11.2M base64 characters and a 4097² grid about 44.8M,
+ * so both are omitted from the local autosave and reported as partial there.
  */
-const AUTOSAVE_PAYLOAD_CHARS = 4_000_000;
+export const AUTOSAVE_GRID_CHAR_LIMIT = 4_000_000;
 
 function terrainPayloadChars(state: WizardState): number {
   const terrain = state.draft.terrain;
@@ -83,7 +85,7 @@ export interface AutosaveWriteResult {
 export function writeAutosave(key: string, state: WizardState): AutosaveWriteResult {
   const compact = stateForLocalStorage(state);
   const omittedGrids = hasTerrainGrids(state);
-  if (terrainPayloadChars(state) > AUTOSAVE_PAYLOAD_CHARS) {
+  if (terrainPayloadChars(state) > AUTOSAVE_GRID_CHAR_LIMIT) {
     try {
       window.localStorage.setItem(key, JSON.stringify(compact));
       return { ok: true, omittedGrids };
