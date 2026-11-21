@@ -59,9 +59,13 @@ fn splash_message() -> &'static std::sync::Mutex<String> {
     SPLASH_MESSAGE.get_or_init(|| std::sync::Mutex::new(String::new()))
 }
 
-/// Source checkout this binary was compiled from, when it still exists. Dev
-/// builds run from it; an installed copy built on CI does not have it.
+/// Source checkout this binary was compiled from. Only debug builds (tauri dev)
+/// trust it: a release build must never load code or data from a path baked in
+/// at compile time, so installed apps always use their bundled resources.
 fn dev_checkout() -> Option<PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
